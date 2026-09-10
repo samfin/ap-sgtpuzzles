@@ -20,7 +20,7 @@ else()
 endif()
 set(MIN_SAFARI_VERSION 150000 CACHE STRING
   "Oldest version of desktop Safari to target (XXYYZZ for version XX.YY.ZZ)")
-set(MIN_CHROME_VERSION 57 CACHE STRING
+set(MIN_CHROME_VERSION 85 CACHE STRING
   "Oldest version of Chrome to target")
 
 find_program(HALIBUT halibut)
