@@ -12,10 +12,10 @@ set(WASM ON
 # 3.1.54). For Firefox _without_ WASM, we go back to Firefox 48
 # because that's what KaiOS 2.5 is based on.
 if(WASM)
-  set(MIN_FIREFOX_VERSION 68 CACHE STRING
+  set(MIN_FIREFOX_VERSION 79 CACHE STRING
     "Oldest major version of Firefox to target")
 else()
-  set(MIN_FIREFOX_VERSION 48 CACHE STRING
+  set(MIN_FIREFOX_VERSION 79 CACHE STRING
     "Oldest major version of Firefox to target")
 endif()
 set(MIN_SAFARI_VERSION 150000 CACHE STRING
