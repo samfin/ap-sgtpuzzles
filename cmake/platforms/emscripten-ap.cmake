@@ -63,14 +63,12 @@ set(emcc_export_list
   # Main program, run at initialisation time
   _main)
 
-list(TRANSFORM emcc_export_list PREPEND \")
-list(TRANSFORM emcc_export_list APPEND \")
 string(JOIN "," emcc_export_string ${emcc_export_list})
 set(CMAKE_C_LINK_FLAGS "\
 -s ALLOW_MEMORY_GROWTH=1 \
 -s ENVIRONMENT=web \
--s EXPORTED_FUNCTIONS='[${emcc_export_string}]' \
--s EXPORTED_RUNTIME_METHODS='[cwrap]' \
+-s EXPORTED_FUNCTIONS=${emcc_export_string} \
+-s EXPORTED_RUNTIME_METHODS=cwrap \
 -s MIN_FIREFOX_VERSION=${MIN_FIREFOX_VERSION} \
 -s MIN_SAFARI_VERSION=${MIN_SAFARI_VERSION} \
 -s MIN_CHROME_VERSION=${MIN_CHROME_VERSION} \
