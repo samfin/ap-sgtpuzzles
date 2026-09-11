@@ -1518,6 +1518,39 @@ static char *solve_game(const game_state *state, const game_state *currstate,
     return out;
 }
 
+/*
+ * Real-solver query for a partial (possibly incompletely-clued) puzzle.
+ * See the doc comment on struct game's get_forced_cells field in
+ * puzzles.h. Cages encoded as C_NO_CLUE ('n' in the descriptor) are, by
+ * construction, simply not seen as constraints by solver() below, so
+ * whatever it can still pin down comes only from the clues that remain
+ * visible.
+ */
+static char *get_forced_cells(const game_params *params, const char *desc)
+{
+    game_state *s;
+    int w = params->w, a = w*w;
+    int i;
+    char *out;
+
+    if (validate_desc(params, desc))
+        return NULL;
+
+    s = new_game(NULL, params, desc);
+
+    memset(s->grid, 0, a);
+    (void)solver(w, s->clues->dsf, s->clues->clues, s->grid, DIFFCOUNT - 1);
+
+    out = snewn(a + 1, char);
+    for (i = 0; i < a; i++)
+        out[i] = (s->grid[i] == 0) ? '.' : ('0' + s->grid[i]);
+    out[a] = '\0';
+
+    free_game(s);
+
+    return out;
+}
+
 struct game_ui {
     /*
      * These are the coordinates of the currently highlighted
@@ -2579,6 +2612,7 @@ const struct game thegame = {
     false,			       /* wants_statusbar */
     false, NULL,                       /* timing_state */
     REQUIRE_RBUTTON | REQUIRE_NUMPAD,  /* flags */
+    get_forced_cells,
 };
 
 #ifdef STANDALONE_SOLVER

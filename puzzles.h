@@ -757,6 +757,23 @@ struct game {
     bool is_timed;
     bool (*timing_state)(const game_state *state, game_ui *ui);
     int flags;
+    /*
+     * Optional. If non-NULL, runs this game's real solving logic
+     * against a params+desc pair that may have some clues withheld
+     * (encoded however this game encodes "no clue", e.g. Keen's 'n'
+     * cage marker), and returns a newly allocated string of
+     * params->w * params->w characters, one per cell in the same
+     * row-major order as the game's own grid array: a digit for a
+     * cell whose value is uniquely forced by the visible clues alone,
+     * or '.' for one that is not yet determined. The caller owns the
+     * returned string (free with sfree()). Returns NULL if desc is
+     * invalid for params. Added for the Archipelago progressive-Keen
+     * client to plan clue-reveal order using the real solver instead
+     * of a separate reimplementation; games that don't implement this
+     * leave the field NULL (safe: C default-initializes trailing
+     * struct-initializer fields to NULL/zero).
+     */
+    char *(*get_forced_cells)(const game_params *params, const char *desc);
 };
 
 #define GET_HANDLE_AS_TYPE(dr, type) ((type*)((dr)->handle))

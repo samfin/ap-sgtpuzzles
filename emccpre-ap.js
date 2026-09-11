@@ -165,6 +165,7 @@ var command;
 
 var get_save_file, free_save_file
 var load_game
+var get_forced_cells_for_desc, free_forced_cells
 
 // The <form> encapsulating the menus.  Used by
 // js_get_selected_preset() and js_select_preset().
@@ -537,6 +538,9 @@ function initPuzzle() {
     get_save_file = Module.cwrap('get_save_file', 'number', []);
     free_save_file = Module.cwrap('free_save_file', 'void', ['number']);
     load_game = Module.cwrap('load_game', 'void', []);
+    get_forced_cells_for_desc = Module.cwrap('get_forced_cells_for_desc', 'number',
+                                              ['string', 'string']);
+    free_forced_cells = Module.cwrap('free_forced_cells', 'void', ['number']);
 
     if (save_button) save_button.onclick = function(event) {
         if (dlg_dimmer === null) {

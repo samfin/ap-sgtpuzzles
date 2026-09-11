@@ -124,6 +124,8 @@ void free_save_file(char *buffer);
 char *get_save_file(void);
 void free_save_file(char *buffer);
 void load_game(void);
+char *get_forced_cells_for_desc(const char *params_str, const char *desc_str);
+void free_forced_cells(char *buffer);
 void dlg_return_sval(int index, const char *val);
 void dlg_return_ival(int index, int val);
 void resize_puzzle(int w, int h);
@@ -866,6 +868,41 @@ char *get_save_file(void)
 }
 
 void free_save_file(char *buffer)
+{
+    sfree(buffer);
+}
+
+/*
+ * Runs this game's real solving logic (struct game's optional
+ * get_forced_cells field -- see puzzles.h) against a params+desc pair
+ * that JS supplies as plain strings, e.g. so a client can plan a
+ * progressive clue-reveal order using the actual solver instead of a
+ * separate reimplementation. Returns a newly heap-allocated string
+ * (free with free_forced_cells()): the per-cell forced/undetermined
+ * string described in puzzles.h on success, or an empty string if this
+ * game doesn't implement get_forced_cells, or if params_str/desc_str
+ * don't parse/validate.
+ */
+char *get_forced_cells_for_desc(const char *params_str, const char *desc_str)
+{
+    game_params *p;
+    char *result;
+
+    if (!thegame.get_forced_cells)
+        return dupstr("");
+
+    p = thegame.default_params();
+    thegame.decode_params(p, params_str);
+    result = thegame.get_forced_cells(p, desc_str);
+    thegame.free_params(p);
+
+    if (!result)
+        return dupstr("");
+
+    return result;
+}
+
+void free_forced_cells(char *buffer)
 {
     sfree(buffer);
 }

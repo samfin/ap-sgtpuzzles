@@ -60,6 +60,11 @@ set(emcc_export_list
   # Functions for allocating and freeing C memory
   _malloc
   _free
+  # Real-solver query for planning a progressive clue reveal
+  # (Archipelago client only; a no-op empty-string stub on games
+  # that don't implement struct game's get_forced_cells)
+  _get_forced_cells_for_desc
+  _free_forced_cells
   # Main program, run at initialisation time
   _main)
 
