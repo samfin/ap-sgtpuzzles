@@ -16,6 +16,7 @@
 
 #include "puzzles.h"
 #include "latin.h"
+#include "keen_forced_solver.h"
 
 /*
  * Difficulty levels. I do some macro ickery here to ensure that my
@@ -1521,16 +1522,32 @@ static char *solve_game(const game_state *state, const game_state *currstate,
 /*
  * Real-solver query for a partial (possibly incompletely-clued) puzzle.
  * See the doc comment on struct game's get_forced_cells field in
- * puzzles.h. Cages encoded as C_NO_CLUE ('n' in the descriptor) are, by
- * construction, simply not seen as constraints by solver() below, so
- * whatever it can still pin down comes only from the clues that remain
- * visible.
+ * puzzles.h, and keen_forced_solver.h for the exact semantics this
+ * implements: a cell is reported iff EVERY complete Keen solution
+ * consistent with the currently-visible (non-masked) cages agrees on
+ * its value -- the precise mathematical notion, not merely whatever a
+ * particular set of human-style techniques happens to catch.
+ *
+ * This used to call this file's own solver() (the same one new_game()
+ * uses to construct/validate puzzles) at DIFF_EXTREME, the highest
+ * non-recursive technique level. That is sound -- it never reports a
+ * wrong digit -- but it is *incomplete* in a way that matters here:
+ * DIFF_EXTREME's technique set has no notion of, for example, "this
+ * row's cells always sum to a fixed constant", so a clue arrangement
+ * like "first three cells of a row sum to 10, next two sum to 7"
+ * fails to force the row's last cell to 4 even though that is a
+ * logical certainty. keen_forced_solver() is a separate, specialised
+ * solver built for exactly this query -- bitmask-domain constraint
+ * propagation (including that row/column-total argument) plus exact
+ * backtracking search for whatever propagation alone can't settle --
+ * so its answers are complete as well as sound, bounded only by a
+ * generous internal work budget for pathological inputs (see that
+ * file's header comment).
  */
 static char *get_forced_cells(const game_params *params, const char *desc)
 {
     game_state *s;
-    int w = params->w, a = w*w;
-    int i;
+    int w = params->w;
     char *out;
 
     if (validate_desc(params, desc))
@@ -1538,13 +1555,7 @@ static char *get_forced_cells(const game_params *params, const char *desc)
 
     s = new_game(NULL, params, desc);
 
-    memset(s->grid, 0, a);
-    (void)solver(w, s->clues->dsf, s->clues->clues, s->grid, DIFFCOUNT - 1);
-
-    out = snewn(a + 1, char);
-    for (i = 0; i < a; i++)
-        out[i] = (s->grid[i] == 0) ? '.' : ('0' + s->grid[i]);
-    out[a] = '\0';
+    out = keen_forced_solver(w, s->clues->dsf, s->clues->clues);
 
     free_game(s);
 
