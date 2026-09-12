@@ -17,6 +17,7 @@
 #include "puzzles.h"
 #include "latin.h"
 #include "keen_forced_solver.h"
+#include "keen_human_solver.h"
 
 /*
  * Difficulty levels. I do some macro ickery here to ensure that my
@@ -1562,6 +1563,63 @@ static char *get_forced_cells(const game_params *params, const char *desc)
     return out;
 }
 
+/*
+ * Same as get_forced_cells above, but via keen_human_solver() instead
+ * of keen_forced_solver() -- see puzzles.h's get_forced_cells_human
+ * field and keen_human_solver.h for why this exists separately.
+ */
+static char *get_forced_cells_human(const game_params *params, const char *desc)
+{
+    game_state *s;
+    int w = params->w;
+    char *out;
+
+    if (validate_desc(params, desc))
+        return NULL;
+
+    s = new_game(NULL, params, desc);
+
+    out = keen_human_solver(w, s->clues->dsf, s->clues->clues);
+
+    free_game(s);
+
+    return out;
+}
+
+/*
+ * Test/debug-only entry point (used by keen_human_solver_test.c's fuzz
+ * regression against keen_forced_solver(), and available for anyone
+ * else debugging this pair of solvers): identical to get_forced_cells()
+ * above, but also reports, via budget_aborted_out (nullable), whether
+ * keen_forced_solver()'s internal search hit its work budget before
+ * finishing -- see keen_forced_solver_ex()'s doc comment in
+ * keen_forced_solver.h for why that distinction matters when treating a
+ * '.' in the result as a proof that a cell is genuinely not forced.
+ * Deliberately NOT part of struct game (never reached via the game
+ * dispatch table, so it can't affect any real gameplay path) -- just a
+ * plain exported function for tests/tools that link against this file
+ * directly.
+ */
+char *get_forced_cells_ex(const game_params *params, const char *desc,
+                           bool *budget_aborted_out)
+{
+    game_state *s;
+    int w = params->w;
+    char *out;
+
+    if (validate_desc(params, desc))
+        return NULL;
+
+    s = new_game(NULL, params, desc);
+
+    out = keen_forced_solver_ex(w, s->clues->dsf, s->clues->clues,
+                                 budget_aborted_out);
+
+    free_game(s);
+
+    return out;
+}
+
 struct game_ui {
     /*
      * These are the coordinates of the currently highlighted
@@ -2624,6 +2682,7 @@ const struct game thegame = {
     false, NULL,                       /* timing_state */
     REQUIRE_RBUTTON | REQUIRE_NUMPAD,  /* flags */
     get_forced_cells,
+    get_forced_cells_human,
 };
 
 #ifdef STANDALONE_SOLVER

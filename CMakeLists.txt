@@ -9,6 +9,7 @@ include(cmake/setup.cmake)
 add_library(core_obj OBJECT
   combi.c divvy.c draw-poly.c drawing.c dsf.c findloop.c grid.c
   keen_forced_solver.c
+  keen_human_solver.c
   latin.c laydomino.c loopgen.c malloc.c matching.c midend.c misc.c
   penrose.c penrose-legacy.c ps.c random.c sort.c tdq.c tree234.c
   version.c

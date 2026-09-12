@@ -774,6 +774,23 @@ struct game {
      * struct-initializer fields to NULL/zero).
      */
     char *(*get_forced_cells)(const game_params *params, const char *desc);
+    /*
+     * Optional, same calling convention as get_forced_cells above
+     * (including ownership/NULL rules). Where get_forced_cells uses
+     * this game's exact solver (correct but possibly only provable via
+     * search, with no accessible "reason"), get_forced_cells_human
+     * uses a deliberately weaker solver restricted to non-bifurcating,
+     * human-style deduction techniques -- see keen_human_solver.h for
+     * why the two differ and when to use which. Its result is always a
+     * sound subset of get_forced_cells's (never a wrong digit, but may
+     * leave forced cells undetermined that get_forced_cells would
+     * report). Added for the same Archipelago progressive-Keen client
+     * as get_forced_cells, to plan a clue-reveal order that is
+     * actually deducible by a player rather than merely mathematically
+     * forced -- see the project's progress notes for the playtesting
+     * finding that motivated this.
+     */
+    char *(*get_forced_cells_human)(const game_params *params, const char *desc);
 };
 
 #define GET_HANDLE_AS_TYPE(dr, type) ((type*)((dr)->handle))

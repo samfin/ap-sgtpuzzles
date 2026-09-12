@@ -702,7 +702,8 @@ static int build_cages(int w, DSF *dsf, unsigned long *clues, Cage **out_cages)
  * Public entry point.
  * ------------------------------------------------------------------ */
 
-char *keen_forced_solver(int w, DSF *dsf, unsigned long *clues)
+char *keen_forced_solver_ex(int w, DSF *dsf, unsigned long *clues,
+                             bool *budget_aborted_out)
 {
     Solver s;
     int a = w * w;
@@ -736,6 +737,8 @@ char *keen_forced_solver(int w, DSF *dsf, unsigned long *clues)
     }
 
     mark_all_dirty(&s);
+
+    if (budget_aborted_out) *budget_aborted_out = false;
 
     if (!propagate(&s)) {
         free(s.cages);
@@ -957,6 +960,7 @@ char *keen_forced_solver(int w, DSF *dsf, unsigned long *clues)
     }
 
 done_verifying:
+    if (budget_aborted_out) *budget_aborted_out = s.budget_aborted;
     for (i = 0; i < a; i++)
         out[i] = is_forced[i] ? (char)('0' + lowest_value(witness[i])) : '.';
 
@@ -965,3 +969,11 @@ done_verifying:
     free(s.trail);
     return out;
 }
+
+char *keen_forced_solver(int w, DSF *dsf, unsigned long *clues)
+{
+    return keen_forced_solver_ex(w, dsf, clues, NULL);
+}
+
+
+
