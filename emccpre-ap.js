@@ -166,6 +166,7 @@ var command;
 var get_save_file, free_save_file
 var load_game
 var get_forced_cells_for_desc, free_forced_cells
+var inc_solver_create, inc_solver_reveal_and_snapshot, inc_solver_destroy
 
 // The <form> encapsulating the menus.  Used by
 // js_get_selected_preset() and js_select_preset().
@@ -541,6 +542,12 @@ function initPuzzle() {
     get_forced_cells_for_desc = Module.cwrap('get_forced_cells_for_desc', 'number',
                                               ['string', 'string']);
     free_forced_cells = Module.cwrap('free_forced_cells', 'void', ['number']);
+    inc_solver_create = Module.cwrap('inc_solver_create', 'number',
+                                      ['string', 'string']);
+    inc_solver_reveal_and_snapshot = Module.cwrap(
+        'inc_solver_reveal_and_snapshot', 'number',
+        ['number', 'number', 'number', 'number']);
+    inc_solver_destroy = Module.cwrap('inc_solver_destroy', 'void', ['number']);
 
     if (save_button) save_button.onclick = function(event) {
         if (dlg_dimmer === null) {

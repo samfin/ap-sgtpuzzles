@@ -126,6 +126,10 @@ void free_save_file(char *buffer);
 void load_game(void);
 char *get_forced_cells_for_desc(const char *params_str, const char *desc_str);
 void free_forced_cells(char *buffer);
+void *inc_solver_create(const char *params_str, const char *desc_str);
+char *inc_solver_reveal_and_snapshot(void *inc, int cage_index, int op,
+                                      int value);
+void inc_solver_destroy(void *inc);
 void dlg_return_sval(int index, const char *val);
 void dlg_return_ival(int index, int val);
 void resize_puzzle(int w, int h);
@@ -905,6 +909,71 @@ char *get_forced_cells_for_desc(const char *params_str, const char *desc_str)
 void free_forced_cells(char *buffer)
 {
     sfree(buffer);
+}
+
+/*
+ * Generic incremental/warm-start solver bridge -- see struct game's
+ * incremental_solver_create/reveal/snapshot/destroy fields in
+ * puzzles.h for the calling convention (including the op encoding,
+ * which is specific to whichever game implements this; this file
+ * stays puzzle-agnostic exactly like get_forced_cells_for_desc above,
+ * a no-op returning NULL/empty-string/nothing on games that don't).
+ * inc is an opaque handle -- a raw void* smuggled across the WASM
+ * boundary as a plain 'number' (see emccpre-ap.js's cwrap
+ * declarations) -- valid only for the lifetime of the currently
+ * loaded game module and only until inc_solver_destroy() is called on
+ * it.
+ */
+void *inc_solver_create(const char *params_str, const char *desc_str)
+{
+    game_params *p;
+    void *inc;
+
+    if (!thegame.incremental_solver_create)
+        return NULL;
+
+    p = thegame.default_params();
+    thegame.decode_params(p, params_str);
+    inc = thegame.incremental_solver_create(p, desc_str);
+    thegame.free_params(p);
+
+    return inc;
+}
+
+/*
+ * Reveals cage_index into an open session and immediately returns the
+ * resulting forced-cells snapshot, combining
+ * incremental_solver_reveal()+incremental_solver_snapshot() into one
+ * call -- every real caller needs exactly this combination (see
+ * src/puzzles.js's planNaturalStages()), and halving the postMessage
+ * round trips matters when planning a single puzzle does one call per
+ * cage. Returns an EMPTY string (distinguishable from a real
+ * snapshot, which is always exactly params->w * params->w characters
+ * long) iff the reveal made the session's clue set outright
+ * contradictory (matching incremental_solver_reveal's own
+ * false-return contract) or if this game doesn't implement the
+ * incremental API at all -- inc should not be used again in that
+ * case, only passed to inc_solver_destroy(). Free the result with
+ * free_forced_cells(), same as get_forced_cells_for_desc's result.
+ */
+char *inc_solver_reveal_and_snapshot(void *inc, int cage_index, int op,
+                                      int value)
+{
+    if (!thegame.incremental_solver_reveal ||
+        !thegame.incremental_solver_snapshot || !inc)
+        return dupstr("");
+
+    if (!thegame.incremental_solver_reveal(inc, cage_index, op,
+                                            (long)value))
+        return dupstr("");
+
+    return thegame.incremental_solver_snapshot(inc);
+}
+
+void inc_solver_destroy(void *inc)
+{
+    if (thegame.incremental_solver_destroy && inc)
+        thegame.incremental_solver_destroy(inc);
 }
 
 static bool savefile_read(void *vctx, void *buf, int len)

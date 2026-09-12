@@ -1587,6 +1587,84 @@ static char *get_forced_cells_human(const game_params *params, const char *desc)
 }
 
 /*
+ * Small, WASM/JS-boundary-friendly op encoding for
+ * keen_incremental_solver_reveal() below, translated to this file's
+ * own C_ADD/C_MUL/C_SUB/C_DIV bit-flag encoding internally -- kept
+ * deliberately distinct so a caller across the generic struct game
+ * incremental_solver_reveal field (see puzzles.h), which for Keen
+ * ultimately means JS via emcc-ap.c, never needs to know Keen's
+ * internal clue-encoding bit patterns (one of which, C_DIV, doesn't
+ * fit in a plain non-negative int).
+ */
+enum {
+    KEEN_INC_OP_ADD = 1,
+    KEEN_INC_OP_SUB = 2,
+    KEEN_INC_OP_MUL = 3,
+    KEEN_INC_OP_DIV = 4,
+};
+
+/* Forward declaration: get_puzzle_geometry_ex() is defined further down
+ * in this file (it's a test/debug-only entry point, not part of struct
+ * game, so it has no header prototype anywhere) but is needed here by
+ * keen_incremental_solver_create() below. */
+bool get_puzzle_geometry_ex(const game_params *params, const char *desc,
+                             DSF **dsf_out, unsigned long **clues_out);
+
+/*
+ * struct game's incremental_solver_* quartet (see puzzles.h for the
+ * calling convention), implemented via keen_human_solver_create()'s
+ * incremental/warm-start API -- see keen_human_solver.h's "Incremental
+ * / warm-start API" section for the full argument for why this is
+ * sound, and this file's get_forced_cells_human() above for why the
+ * human-style solver specifically (rather than keen_forced_solver())
+ * is the right one to make incremental for this use case.
+ */
+static void *keen_incremental_solver_create(const game_params *params,
+                                             const char *desc)
+{
+    DSF *dsf;
+    unsigned long *clues;
+    KeenHumanIncSolver *inc;
+
+    if (!get_puzzle_geometry_ex(params, desc, &dsf, &clues))
+        return NULL;
+
+    inc = keen_human_solver_create(params->w, dsf);
+
+    sfree(clues);
+    dsf_free(dsf);
+
+    return inc;
+}
+
+static bool keen_incremental_solver_reveal(void *inc, int cage_index,
+                                            int op, long value)
+{
+    int real_op;
+
+    switch (op) {
+      case KEEN_INC_OP_ADD: real_op = (int)C_ADD; break;
+      case KEEN_INC_OP_SUB: real_op = (int)C_SUB; break;
+      case KEEN_INC_OP_MUL: real_op = (int)C_MUL; break;
+      case KEEN_INC_OP_DIV: real_op = (int)C_DIV; break;
+      default: return false;
+    }
+
+    return keen_human_solver_reveal((KeenHumanIncSolver *)inc, cage_index,
+                                     real_op, value);
+}
+
+static char *keen_incremental_solver_snapshot(void *inc)
+{
+    return keen_human_solver_snapshot((KeenHumanIncSolver *)inc);
+}
+
+static void keen_incremental_solver_destroy(void *inc)
+{
+    keen_human_solver_destroy((KeenHumanIncSolver *)inc);
+}
+
+/*
  * Test/debug-only entry point (used by keen_human_solver_test.c's fuzz
  * regression against keen_forced_solver(), and available for anyone
  * else debugging this pair of solvers): identical to get_forced_cells()
@@ -1618,6 +1696,47 @@ char *get_forced_cells_ex(const game_params *params, const char *desc,
     free_game(s);
 
     return out;
+}
+
+/*
+ * Test/debug-only entry point: extracts an INDEPENDENT copy of a
+ * puzzle descriptor's cage geometry (an equivalent-partition DSF) and
+ * its clues array, for exercising keen_human_solver_create()'s
+ * incremental/warm-start API directly against a real generated puzzle
+ * without needing to keep the (otherwise-opaque) game_state itself
+ * alive. *dsf_out and *clues_out are freshly allocated and independent
+ * of anything free_game() below touches; the caller owns them
+ * (dsf_free() and sfree() respectively). Deliberately NOT part of
+ * struct game -- never reached via the game dispatch table.
+ */
+bool get_puzzle_geometry_ex(const game_params *params, const char *desc,
+                             DSF **dsf_out, unsigned long **clues_out)
+{
+    game_state *s;
+    int w = params->w, a = w * w;
+    int i;
+    DSF *dsf;
+    unsigned long *clues;
+
+    if (validate_desc(params, desc))
+        return false;
+
+    s = new_game(NULL, params, desc);
+
+    dsf = dsf_new_min(a);
+    for (i = 0; i < a; i++) {
+        int root = dsf_minimal(s->clues->dsf, i);
+        if (root != i)
+            dsf_merge(dsf, i, root);
+    }
+    clues = snewn(a, unsigned long);
+    memcpy(clues, s->clues->clues, (size_t)a * sizeof(unsigned long));
+
+    free_game(s);
+
+    *dsf_out = dsf;
+    *clues_out = clues;
+    return true;
 }
 
 struct game_ui {
@@ -2683,6 +2802,10 @@ const struct game thegame = {
     REQUIRE_RBUTTON | REQUIRE_NUMPAD,  /* flags */
     get_forced_cells,
     get_forced_cells_human,
+    keen_incremental_solver_create,
+    keen_incremental_solver_reveal,
+    keen_incremental_solver_snapshot,
+    keen_incremental_solver_destroy,
 };
 
 #ifdef STANDALONE_SOLVER

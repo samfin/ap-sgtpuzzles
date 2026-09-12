@@ -232,6 +232,26 @@ typedef struct {
      * every cage so the first round enumerates everything.
      */
     bool dirty;
+
+    /*
+     * Meaningful only for a residual cage (is_residual == true), used
+     * only by the incremental/warm-start API below (KeenHumanIncSolver):
+     * true iff this residual slot currently covers at least one leftover
+     * cell (n > 0). A residual cage that has never been activated (no
+     * contained ADD cage revealed yet in its row/column) and one that
+     * was activated but has since been fully covered again (every
+     * position now covered by some revealed contained ADD cage) are
+     * both represented as n == 0 and behave identically to every
+     * downstream consumer (apply_cage_support, revise_unit_subsets's
+     * caller, cage_confined_to, the group-capacity sums) -- a 0-cell
+     * C_ADD cage is a complete no-op everywhere. This flag exists purely
+     * so the incremental reveal code can tell "not yet started" apart
+     * from "fully covered" when deciding whether to reinitialize versus
+     * shrink; it is never read by the one-shot solver above, which never
+     * creates a Cage in this ambiguous state (build_cages() only ever
+     * creates a residual cage already fully formed, or not at all).
+     */
+    bool activated;
 } Cage;
 
 /* A cell can belong to its real cage, a row-residual cage and a
@@ -552,6 +572,48 @@ static void enum_recurse(EnumCtx *ctx, int idx, long acc, bool *overflow)
  * shrink the domains and the same enumeration becomes cheap enough to
  * finish), never soundness.
  */
+/*
+ * (Re)derives cage->mincount[]/mincount_pair[][] from cage->tuples[0..
+ * ntuples-1] as they currently stand. Factored out of enumerate_cage()
+ * so that apply_group_capacity()'s rule (b) -- which prunes tuples
+ * in-place without a full re-enumeration -- can call this immediately
+ * after pruning to keep mincount/mincount_pair in sync with the tuple
+ * list they're supposed to summarize. Without this, a cage whose
+ * tuples were pruned by rule (b) keeps stale (too-loose) mincount
+ * values until it next happens to be re-enumerated for an unrelated
+ * reason (its own dirty flag is never set by tuple pruning alone,
+ * since pruning isn't a domain change) -- a real completeness gap:
+ * still sound (a stale mincount is always <= the true, tighter one,
+ * since removing tuples can only raise the true minimum), but able to
+ * silently miss a further group-capacity deduction that the freshly
+ * -tightened bound would have enabled, for as long as nothing else
+ * happens to mark that cage dirty. Caller must ensure cage->ntuples > 0
+ * (a cage with zero surviving tuples is a contradiction, handled by
+ * the caller before this would be reached).
+ */
+static void recompute_mincounts(Solver *s, Cage *cage)
+{
+    int d, t, i;
+    for (d = 1; d <= s->w; d++) cage->mincount[d] = cage->n + 1;
+    for (d = 1; d <= s->w; d++)
+        for (i = d + 1; i <= s->w; i++)
+            cage->mincount_pair[d][i] = cage->n + 1;
+
+    for (t = 0; t < cage->ntuples; t++) {
+        int count[MAX_W + 1];
+        for (d = 1; d <= s->w; d++) count[d] = 0;
+        for (i = 0; i < cage->n; i++) count[cage->tuples[t][i]]++;
+        for (d = 1; d <= s->w; d++)
+            if (count[d] < cage->mincount[d]) cage->mincount[d] = count[d];
+        for (d = 1; d <= s->w; d++)
+            for (i = d + 1; i <= s->w; i++) {
+                int combined = count[d] + count[i];
+                if (combined < cage->mincount_pair[d][i])
+                    cage->mincount_pair[d][i] = combined;
+            }
+    }
+}
+
 static bool enumerate_cage(Solver *s, Cage *cage)
 {
     EnumCtx ctx;
@@ -580,27 +642,7 @@ static bool enumerate_cage(Solver *s, Cage *cage)
     if (cage->ntuples == 0)
         return false; /* no completion at all for this cage: contradiction */
 
-    {
-        int d, t, i;
-        for (d = 1; d <= s->w; d++) cage->mincount[d] = cage->n + 1;
-        for (d = 1; d <= s->w; d++)
-            for (i = d + 1; i <= s->w; i++)
-                cage->mincount_pair[d][i] = cage->n + 1;
-
-        for (t = 0; t < cage->ntuples; t++) {
-            int count[MAX_W + 1];
-            for (d = 1; d <= s->w; d++) count[d] = 0;
-            for (i = 0; i < cage->n; i++) count[cage->tuples[t][i]]++;
-            for (d = 1; d <= s->w; d++)
-                if (count[d] < cage->mincount[d]) cage->mincount[d] = count[d];
-            for (d = 1; d <= s->w; d++)
-                for (i = d + 1; i <= s->w; i++) {
-                    int combined = count[d] + count[i];
-                    if (combined < cage->mincount_pair[d][i])
-                        cage->mincount_pair[d][i] = combined;
-                }
-        }
-    }
+    recompute_mincounts(s, cage);
 
     return true;
 }
@@ -912,6 +954,10 @@ static bool apply_group_capacity(Solver *s, int dim, unsigned int unitmask, int 
             cage->ntuples = kept;
             if (kept == 0)
                 return false; /* every tuple eliminated: contradiction */
+            /* Keep mincount/mincount_pair in sync with the tuple list
+             * we just shrank -- see recompute_mincounts()'s comment for
+             * why this can't just wait for the next re-enumeration. */
+            recompute_mincounts(s, cage);
         }
     }
 
@@ -1032,13 +1078,60 @@ static bool run_one_pass(Solver *s, bool *changed)
     return true;
 }
 
+/*
+ * Repeatedly runs run_one_pass() until a full pass changes nothing --
+ * shared by the one-shot and incremental entry points below. rounds, if
+ * non-NULL, is incremented once per run_one_pass() call and used only
+ * for s->trace's pass numbering.
+ *
+ * Known limitation: dirty-gating (Cage.dirty/row_dirty/col_dirty/
+ * group_capacity_dirty) is a pure performance mechanism, and this file
+ * has one confirmed way for it to leave a rare, extremely narrow
+ * completeness gap in place -- see recompute_mincounts()'s comment for
+ * the specific (and fixed) case of a cage's mincount/mincount_pair going
+ * stale after apply_group_capacity()'s rule (b) prunes its tuples
+ * in-place. Fixing that closed the overwhelming majority of observed
+ * cases in testing (auxiliary/keen-incremental-solver-test.c), but a
+ * single further instance of the same general class was observed in
+ * fuzz testing at w=9 (roughly 1 in 1500 reveal steps) whose exact
+ * trigger was not pinned down. An unconditional "verify with an extra
+ * fully-dirty pass" fix was tried and rejected: it can cascade into
+ * many full O(cages) passes on exactly the large, heavily-masked boards
+ * this dirty-gating exists to keep fast (the same hang class fixed
+ * earlier -- see keen_human_solver.c's history), trading a
+ * near-un-observable completeness gap for a real, reproducible
+ * performance regression. Given this solver is already a deliberately
+ * SOUND BUT INCOMPLETE subset of keen_forced_solver() by design (see
+ * keen_human_solver.h), never reporting a wrong digit, an occasional
+ * missed deduction in a rare cascade is the acceptable side to err on;
+ * a wrong digit would not be. If this gap is ever pinned down precisely,
+ * the right fix is another targeted recompute at its specific source
+ * (as recompute_mincounts() was for the first one), not a blanket
+ * re-verification pass here.
+ */
+static bool converge_solver(Solver *s, int *rounds)
+{
+    bool changed;
+
+    do {
+        changed = false;
+        if (rounds) {
+            ++*rounds;
+            if (s->trace) fprintf(s->trace, "-- pass %d --\n", *rounds);
+        }
+        if (!run_one_pass(s, &changed))
+            return false;
+    } while (changed);
+
+    return true;
+}
+
 char *keen_human_solver_trace(int w, DSF *dsf, unsigned long *clues, FILE *trace)
 {
     Solver s;
     int a = w * w;
     int i;
     char *out;
-    bool changed;
     int rounds = 0;
 
     memset(&s, 0, sizeof(s));
@@ -1052,15 +1145,11 @@ char *keen_human_solver_trace(int w, DSF *dsf, unsigned long *clues, FILE *trace
     for (i = 0; i < w; i++) s.row_dirty[i] = s.col_dirty[i] = true;
     s.group_capacity_dirty = true;
 
-    do {
-        changed = false;
-        if (s.trace) fprintf(s.trace, "-- pass %d --\n", ++rounds);
-        if (!run_one_pass(&s, &changed)) {
-            for (i = 0; i < s.ncages; i++) free(s.cages[i].tuples);
-            free(s.cages);
-            return NULL;
-        }
-    } while (changed);
+    if (!converge_solver(&s, &rounds)) {
+        for (i = 0; i < s.ncages; i++) free(s.cages[i].tuples);
+        free(s.cages);
+        return NULL;
+    }
 
     out = malloc((size_t)a + 1);
     out[a] = '\0';
@@ -1078,3 +1167,362 @@ char *keen_human_solver(int w, DSF *dsf, unsigned long *clues)
 {
     return keen_human_solver_trace(w, dsf, clues, NULL);
 }
+
+/* ====================================================================
+ * Incremental / warm-start API.
+ *
+ * Motivation: puzzle-generation clue-grouping planning calls this
+ * solver over and over against the SAME fixed cage geometry, each time
+ * with one more cage's clue revealed than last time -- e.g. "what's
+ * forced with just cage 3 visible?", then "...cages 3 and 7?", then
+ * "...3, 7 and 1?", and so on until every cage is visible. The one-shot
+ * API above redoes every bit of propagation from scratch on every such
+ * call, including re-enumerating every cage's tuples and rerunning the
+ * whole fixpoint loop, even though almost nothing changed between two
+ * consecutive calls.
+ *
+ * Soundness of warm-starting: revealing an additional cage's clue can
+ * only ever SHRINK the set of valid grid completions (it adds a
+ * constraint, never removes one), so every domain narrowing, forced
+ * cell, and cage-tuple elimination made from a smaller revealed-cage
+ * set remains valid forever once more cages are revealed on top of it
+ * -- nothing this solver ever concludes needs to be retracted as more
+ * clues appear. This is exactly why the one-shot solver above has no
+ * undo trail at all: every removal is already permanent. Warm-starting
+ * simply keeps one persistent Solver alive across many reveals instead
+ * of rebuilding it, and lets the existing dirty-tracking machinery
+ * (mark_dirty(), Cage.dirty, row_dirty/col_dirty, group_capacity_dirty)
+ * do exactly what it already does in the one-shot loop: skip any
+ * recomputation whose result can't have changed.
+ *
+ * Cages start out with op == C_NO_CLUE, exactly like any cage this file
+ * has never been able to enumerate a clue for -- enumerate_cage()
+ * already treats C_NO_CLUE as "no constraint, no tuples, always
+ * succeeds" (see its top few lines), so an unrevealed real cage simply
+ * contributes nothing anywhere, with zero special-casing needed outside
+ * this section.
+ *
+ * The one piece of real bookkeeping this needs is the synthetic
+ * row/column residual-sum cages (technique 4 in the file header): which
+ * cells they cover and what they sum to depends on ALL CURRENTLY
+ * REVEALED addition cages contained in that row/column, so revealing
+ * one more such cage can shrink an already-active residual cage,
+ * activate one that had no coverage at all yet, or (if a cage exactly
+ * completes a row/column's coverage) deactivate one entirely. Cage
+ * geometry (which real cage is entirely contained in which row/column,
+ * i.e. home_row[]/home_col[] below) is fixed at creation time and never
+ * changes, so recomputing one affected row's or column's residual cage
+ * is a cheap O(w) scan over that unit's real cages -- structurally
+ * identical to (and exactly reproducing) what build_cages() computes in
+ * one shot, just re-run for one unit at a time instead of all 2w of
+ * them. This keeps the incremental design simple and obviously correct
+ * (it's the same formula, just re-evaluated) rather than trying to
+ * patch a residual cage's cell list/value in place.
+ * ==================================================================== */
+
+struct KeenHumanIncSolver {
+    Solver s;
+    int real_ncages;
+    int row_residual_idx[MAX_W];   /* cage index of row r's residual slot */
+    int col_residual_idx[MAX_W];   /* cage index of col c's residual slot */
+    int *home_row;  /* [real_ncages]; -1 if cage i isn't entirely in one row */
+    int *home_col;  /* [real_ncages]; -1 if cage i isn't entirely in one col */
+};
+
+/* Marks `cg` itself, and every row/column touching one of its cells,
+ * dirty -- used whenever a cage's op/value/cell-list changes directly
+ * (as opposed to mark_dirty(), which is keyed off a CELL's domain
+ * changing). Also unconditionally marks group_capacity_dirty, for the
+ * same reason mark_dirty() does: a single cage's tuples changing can in
+ * principle affect the group-capacity demand sum for many groups at
+ * once, so there is no cheaper sound thing to do than reconsider it. */
+static void mark_cage_and_units_dirty(Solver *s, Cage *cg)
+{
+    int k;
+    cg->dirty = true;
+    for (k = 0; k < cg->n; k++) {
+        s->row_dirty[cell_row(s, cg->cells[k])] = true;
+        s->col_dirty[cell_col(s, cg->cells[k])] = true;
+    }
+    s->group_capacity_dirty = true;
+}
+
+/* Recomputes row r's (dim==0) or column u's (dim==1) residual cage from
+ * scratch, from the CURRENT op/value of every real cage entirely
+ * contained in that unit -- exactly reproducing the relevant slice of
+ * build_cages()'s one-shot computation (see there), just re-run for one
+ * unit instead of all of them. O(real_ncages + w); cheap, and always
+ * exactly correct regardless of reveal order, since it depends only on
+ * the current (order-independent) set of revealed ADD cages contained
+ * in this unit, never on how it got there. */
+static void recompute_residual(KeenHumanIncSolver *inc, int dim, int u)
+{
+    Solver *s = &inc->s;
+    Cage *rc = &s->cages[dim == 0 ? inc->row_residual_idx[u]
+                                   : inc->col_residual_idx[u]];
+    bool covered[MAX_W];
+    int pos, coveredcount = 0, i;
+    long ssum = 0;
+
+    for (pos = 0; pos < s->w; pos++) covered[pos] = false;
+
+    for (i = 0; i < inc->real_ncages; i++) {
+        Cage *cg = &s->cages[i];
+        int home = (dim == 0) ? inc->home_row[i] : inc->home_col[i];
+        int k;
+        if (cg->op != C_ADD) continue;
+        if (home != u) continue;
+        for (k = 0; k < cg->n; k++) {
+            int cell = cg->cells[k];
+            int p = (dim == 0) ? cell_col(s, cell) : cell_row(s, cell);
+            if (!covered[p]) { covered[p] = true; coveredcount++; }
+        }
+        ssum += cg->value;
+    }
+
+    if (coveredcount == 0 || coveredcount == s->w) {
+        if (rc->activated) mark_cage_and_units_dirty(s, rc);
+        rc->n = 0;
+        rc->value = 0;
+        rc->activated = false;
+        rc->rowmask = rc->colmask = 0;
+        return;
+    }
+
+    {
+        int total = s->w * (s->w + 1) / 2;
+        rc->n = 0;
+        for (pos = 0; pos < s->w; pos++) {
+            if (covered[pos]) continue;
+            rc->cells[rc->n++] = (dim == 0) ? (u * s->w + pos)
+                                             : (pos * s->w + u);
+        }
+        rc->value = total - ssum;
+        rc->activated = true;
+        rc->rowmask = rc->colmask = 0;
+        for (i = 0; i < rc->n; i++) {
+            rc->rowmask |= 1u << cell_row(s, rc->cells[i]);
+            rc->colmask |= 1u << cell_col(s, rc->cells[i]);
+        }
+        mark_cage_and_units_dirty(s, rc);
+    }
+}
+
+/*
+ * Creates a fresh incremental solver for a puzzle's fixed cage geometry
+ * (w, dsf), with every real cage's clue unrevealed (op == C_NO_CLUE) --
+ * equivalent to keen_human_solver()'s state before any reveal, and
+ * cheap (no propagation work happens yet, since C_NO_CLUE cages and
+ * full domains give the fixpoint nothing to do). Returns NULL only on
+ * allocation failure or a malformed dsf (defensive; should not happen
+ * for a real puzzle's own dsf). Cages are numbered 0..real_ncages-1 in
+ * exactly the same canonical order build_cages() already uses (DSF-root
+ * -first-encountered while scanning cell index 0..a-1), so cage_index
+ * values here match the ordering the rest of the codebase already
+ * relies on (descriptor encode/decode); residual-cage slots live at
+ * fixed indices real_ncages..real_ncages+2*w-1 and are never addressed
+ * by a caller directly.
+ */
+KeenHumanIncSolver *keen_human_solver_create(int w, DSF *dsf)
+{
+    int a = w * w;
+    int i, j, n, real_ncages = 0;
+    KeenHumanIncSolver *inc;
+    Solver *s;
+
+    for (i = 0; i < a; i++)
+        if (dsf_minimal(dsf, i) == i)
+            real_ncages++;
+
+    inc = calloc(1, sizeof(*inc));
+    if (!inc) return NULL;
+    inc->real_ncages = real_ncages;
+    inc->home_row = malloc(sizeof(int) * (size_t)real_ncages);
+    inc->home_col = malloc(sizeof(int) * (size_t)real_ncages);
+
+    s = &inc->s;
+    s->w = w;
+    s->a = a;
+    for (i = 0; i < a; i++) s->domain[i] = FULL_MASK(w);
+
+    s->ncages = real_ncages + 2 * w;
+    s->cages = calloc((size_t)s->ncages, sizeof(Cage));
+
+    for (n = i = 0; i < a; i++) {
+        if (dsf_minimal(dsf, i) == i) {
+            Cage *cg = &s->cages[n];
+            cg->op = C_NO_CLUE;
+            cg->value = 0;
+            cg->n = 0;
+            for (j = 0; j < a; j++)
+                if (dsf_minimal(dsf, j) == i)
+                    cg->cells[cg->n++] = j;
+            n++;
+        }
+    }
+    assert(n == real_ncages);
+
+    /* Structural home_row/home_col, and rowmask/colmask, per real cage
+     * -- fixed for the lifetime of this solver, computed once here. */
+    for (i = 0; i < real_ncages; i++) {
+        Cage *cg = &s->cages[i];
+        int k;
+        int r0 = cell_row(s, cg->cells[0]), c0 = cell_col(s, cg->cells[0]);
+        bool samerow = true, samecol = true;
+        cg->rowmask = cg->colmask = 0;
+        for (k = 0; k < cg->n; k++) {
+            int r = cell_row(s, cg->cells[k]), c = cell_col(s, cg->cells[k]);
+            if (r != r0) samerow = false;
+            if (c != c0) samecol = false;
+            cg->rowmask |= 1u << r;
+            cg->colmask |= 1u << c;
+        }
+        inc->home_row[i] = samerow ? r0 : -1;
+        inc->home_col[i] = samecol ? c0 : -1;
+    }
+
+    /* Reserve 2*w residual slots at fixed indices, all inactive. */
+    for (i = 0; i < w; i++) {
+        inc->row_residual_idx[i] = real_ncages + i;
+        inc->col_residual_idx[i] = real_ncages + w + i;
+    }
+    for (i = real_ncages; i < s->ncages; i++) {
+        Cage *rc = &s->cages[i];
+        rc->op = (int)C_ADD;
+        rc->value = 0;
+        rc->n = 0;
+        rc->is_residual = true;
+        rc->activated = false;
+    }
+
+    /* Tuple storage for every cage (real and residual alike). */
+    for (i = 0; i < s->ncages; i++) {
+        s->cages[i].tuples = malloc(sizeof(*s->cages[i].tuples) * MAX_TUPLES);
+        s->cages[i].tuples_valid = false;
+        s->cages[i].ntuples = 0;
+        s->cages[i].dirty = true;
+    }
+
+    /* owners[]: for every cell, its real cage plus its row- and
+     * column-residual slots -- fixed forever, regardless of which of
+     * those residual slots is currently activated, since an inactive
+     * slot is just a 0-cell cage rather than a nonexistent one (see
+     * Cage.activated's comment). This is what lets residual-cage
+     * activation/deactivation over time never need owners[] touched
+     * again. */
+    for (i = 0; i < a; i++) s->nowners[i] = 0;
+    for (i = 0; i < real_ncages; i++) {
+        Cage *cg = &s->cages[i];
+        int k;
+        for (k = 0; k < cg->n; k++) {
+            int cell = cg->cells[k];
+            s->owners[cell][s->nowners[cell]++] = i;
+        }
+    }
+    for (i = 0; i < a; i++) {
+        int r = cell_row(s, i), c = cell_col(s, i);
+        s->owners[i][s->nowners[i]++] = inc->row_residual_idx[r];
+        s->owners[i][s->nowners[i]++] = inc->col_residual_idx[c];
+    }
+
+    for (i = 0; i < w; i++) s->row_dirty[i] = s->col_dirty[i] = true;
+    s->group_capacity_dirty = true;
+    s->trace = NULL;
+
+    if (!converge_solver(s, NULL)) {
+        keen_human_solver_destroy(inc);
+        return NULL;
+    }
+
+    return inc;
+}
+
+/*
+ * Reveals cage_index's clue (op/value), reuses every previously-computed
+ * domain/tuple/dirty-flag as its starting point, and reruns the fixpoint
+ * loop until nothing more changes -- doing only the marginal propagation
+ * work this one reveal's consequences require, never redoing work from
+ * earlier reveals. Idempotent: revealing an already-revealed cage again
+ * is a no-op that returns true without touching any state. Returns false
+ * iff the revealed clue set is now outright contradictory (mirrors the
+ * one-shot solver returning NULL); the solver's internal state is left
+ * as-is in that case (get a fresh one via keen_human_solver_create() to
+ * continue).
+ */
+bool keen_human_solver_reveal(KeenHumanIncSolver *inc, int cage_index,
+                               int op, long value)
+{
+    Solver *s = &inc->s;
+    Cage *cg;
+
+    assert(cage_index >= 0 && cage_index < inc->real_ncages);
+    cg = &s->cages[cage_index];
+
+    if (cg->op != C_NO_CLUE)
+        return true; /* already revealed: idempotent no-op */
+
+    cg->op = op;
+    cg->value = value;
+    mark_cage_and_units_dirty(s, cg);
+
+    if (op == (int)C_ADD) {
+        if (inc->home_row[cage_index] >= 0)
+            recompute_residual(inc, 0, inc->home_row[cage_index]);
+        if (inc->home_col[cage_index] >= 0)
+            recompute_residual(inc, 1, inc->home_col[cage_index]);
+    }
+
+    return converge_solver(s, NULL);
+}
+
+/*
+ * Cheap read-only snapshot of the current forced-cells state -- just
+ * reads s.domain[], no propagation work at all. Same format as
+ * keen_human_solver()'s return value (a newly allocated (w*w+1)-byte
+ * string, digit or '.' per cell in row-major order; free with sfree()).
+ */
+char *keen_human_solver_snapshot(KeenHumanIncSolver *inc)
+{
+    Solver *s = &inc->s;
+    char *out = malloc((size_t)s->a + 1);
+    int i;
+    out[s->a] = '\0';
+    for (i = 0; i < s->a; i++)
+        out[i] = (popcount16(s->domain[i]) == 1)
+                     ? (char)('0' + lowest_value(s->domain[i]))
+                     : '.';
+    return out;
+}
+
+int keen_human_solver_cage_count(KeenHumanIncSolver *inc)
+{
+    return inc->real_ncages;
+}
+
+int keen_human_solver_cage_size(KeenHumanIncSolver *inc, int cage_index)
+{
+    assert(cage_index >= 0 && cage_index < inc->real_ncages);
+    return inc->s.cages[cage_index].n;
+}
+
+int keen_human_solver_cage_cell(KeenHumanIncSolver *inc, int cage_index, int k)
+{
+    assert(cage_index >= 0 && cage_index < inc->real_ncages);
+    assert(k >= 0 && k < inc->s.cages[cage_index].n);
+    return inc->s.cages[cage_index].cells[k];
+}
+
+void keen_human_solver_destroy(KeenHumanIncSolver *inc)
+{
+    int i;
+    if (!inc) return;
+    if (inc->s.cages) {
+        for (i = 0; i < inc->s.ncages; i++)
+            free(inc->s.cages[i].tuples);
+        free(inc->s.cages);
+    }
+    free(inc->home_row);
+    free(inc->home_col);
+    free(inc);
+}
+

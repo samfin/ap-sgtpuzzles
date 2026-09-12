@@ -791,6 +791,54 @@ struct game {
      * finding that motivated this.
      */
     char *(*get_forced_cells_human)(const game_params *params, const char *desc);
+    /*
+     * Optional. Together, these four functions expose an incremental /
+     * warm-start solving session built on top of get_forced_cells_human's
+     * underlying solver (see keen_human_solver.h's "Incremental /
+     * warm-start API" for the full argument): a caller that wants to add
+     * clues to the SAME fixed cage geometry one at a time -- e.g. to plan
+     * a progressive clue-reveal order -- can reuse everything already
+     * deduced from earlier reveals instead of re-solving from scratch on
+     * every addition the way repeated get_forced_cells_human() calls
+     * would.
+     *
+     * incremental_solver_create(params, desc) opens a session from a
+     * FULLY-CLUED params+desc pair (only cage geometry is used; every
+     * cage starts unrevealed regardless of what desc's own clues say) and
+     * returns an opaque handle, or NULL if desc doesn't validate against
+     * params or on allocation failure. The caller must eventually pass
+     * the handle to incremental_solver_destroy.
+     *
+     * incremental_solver_reveal(inc, cage_index, op, value) reveals one
+     * cage (numbered in the same canonical order this game's own clue
+     * list encoding already uses) with a specific clue. op is a small,
+     * non-negative, game-specific code -- deliberately NOT this game's
+     * internal clue-encoding bit pattern, which may not fit in a plain
+     * non-negative int (Keen's own encoding requires this: see keen.c's
+     * KEEN_INC_OP_* constants for the mapping this game uses). Returns
+     * false iff the revealed clue set is now outright contradictory, in
+     * which case the session must not be used again except to destroy
+     * it. Idempotent: revealing an already-revealed cage again is a
+     * harmless no-op.
+     *
+     * incremental_solver_snapshot(inc) is a cheap read-only query of the
+     * session's current forced-cells state, same string format/ownership
+     * as get_forced_cells's return value. Safe to call as often as
+     * wanted between reveals.
+     *
+     * Added for the same Archipelago progressive-Keen client as
+     * get_forced_cells_human, whose clue-grouping planner reveals a
+     * puzzle's cages one at a time in a fixed order and previously had
+     * to re-run get_forced_cells_human() from scratch after every single
+     * addition. Games that don't implement this leave all four fields
+     * NULL.
+     */
+    void *(*incremental_solver_create)(const game_params *params,
+                                        const char *desc);
+    bool (*incremental_solver_reveal)(void *inc, int cage_index,
+                                       int op, long value);
+    char *(*incremental_solver_snapshot)(void *inc);
+    void (*incremental_solver_destroy)(void *inc);
 };
 
 #define GET_HANDLE_AS_TYPE(dr, type) ((type*)((dr)->handle))

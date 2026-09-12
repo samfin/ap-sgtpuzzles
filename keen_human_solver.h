@@ -53,4 +53,61 @@ char *keen_human_solver(int w, DSF *dsf, unsigned long *clues);
  */
 char *keen_human_solver_trace(int w, DSF *dsf, unsigned long *clues, FILE *trace);
 
+/*
+ * -------------------------------------------------------------------
+ * Incremental / warm-start API
+ * -------------------------------------------------------------------
+ *
+ * For a caller (puzzle-generation clue-grouping planning) that solves
+ * the SAME fixed cage geometry repeatedly, each time with one more
+ * cage's clue revealed than last time, the one-shot keen_human_solver()
+ * above redoes all propagation work from scratch on every call. This
+ * API instead keeps one persistent solver instance alive per puzzle:
+ * create it once from the puzzle's cage geometry (with every clue
+ * unrevealed), then reveal cages one at a time in any order, each
+ * reveal doing only the marginal propagation work its consequences
+ * require by reusing everything already deduced from previously
+ * revealed cages. This is sound because revealing more clues only ever
+ * shrinks the set of valid completions -- see keen_human_solver.c's
+ * "Incremental / warm-start API" section for the full argument.
+ *
+ * cage_index in every call below refers to a REAL cage, numbered
+ * 0..keen_human_solver_cage_count()-1 in exactly the canonical order
+ * build_cages() (see keen_human_solver.c) already uses -- the same
+ * ordering the rest of the codebase relies on for descriptor
+ * encode/decode.
+ */
+typedef struct KeenHumanIncSolver KeenHumanIncSolver;
+
+/* Creates a fresh incremental solver for puzzle geometry (w, dsf), with
+ * every cage's clue unrevealed. Returns NULL only on allocation failure
+ * or a malformed dsf. Free with keen_human_solver_destroy(). */
+KeenHumanIncSolver *keen_human_solver_create(int w, DSF *dsf);
+
+/* Reveals cage_index's clue (op is one of the same C_ADD/C_MUL/C_SUB/
+ * C_DIV values used elsewhere; value is its target). Idempotent:
+ * revealing an already-revealed cage again is a harmless no-op.
+ * Returns false iff the revealed clue set is now outright
+ * contradictory (in which case this solver instance should be
+ * discarded; further calls on it are not supported). */
+bool keen_human_solver_reveal(KeenHumanIncSolver *inc, int cage_index,
+                               int op, long value);
+
+/* Cheap read-only snapshot of the current forced-cells state, in the
+ * same format keen_human_solver() returns (free with sfree()). Does no
+ * propagation work -- safe to call as often as wanted between
+ * reveals. */
+char *keen_human_solver_snapshot(KeenHumanIncSolver *inc);
+
+/* Cage geometry accessors (fixed for the lifetime of the solver,
+ * regardless of which cages have been revealed) -- lets a caller that
+ * only has this solver instance (and not the original dsf/clues) still
+ * enumerate real cages and their cells, e.g. to decide what to reveal
+ * next. */
+int keen_human_solver_cage_count(KeenHumanIncSolver *inc);
+int keen_human_solver_cage_size(KeenHumanIncSolver *inc, int cage_index);
+int keen_human_solver_cage_cell(KeenHumanIncSolver *inc, int cage_index, int k);
+
+void keen_human_solver_destroy(KeenHumanIncSolver *inc);
+
 #endif

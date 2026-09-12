@@ -63,6 +63,13 @@ set(emcc_export_list
   # that don't implement struct game's get_forced_cells)
   _get_forced_cells_for_desc
   _free_forced_cells
+  # Incremental/warm-start solver bridge for progressive
+  # clue-reveal planning (Archipelago client only; a no-op on
+  # games that don't implement struct game's
+  # incremental_solver_* quartet)
+  _inc_solver_create
+  _inc_solver_reveal_and_snapshot
+  _inc_solver_destroy
   # Main program, run at initialisation time
   _main)
 
