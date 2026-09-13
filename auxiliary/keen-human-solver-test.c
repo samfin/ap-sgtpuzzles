@@ -21,19 +21,26 @@
  *      of a width-6 row from two partial sums alone.
  *   4. A hand-built naked-pair scenario.
  *   5. A hand-built hidden-pair scenario.
- *   6. Trace-based: over several real generated puzzles at a partial
+ *   6. Three hand-worked partial-clue examples reported directly by a
+ *      user of this project as scenarios the solver ought to complete
+ *      but (at an earlier stage of this file's development) didn't --
+ *      each one requires the "claiming" technique (unit -> cage, the
+ *      mirror of pointing's cage -> unit) to get past its stall point.
+ *      Kept as permanent regressions since each is a real, previously-
+ *      reported failure, not a synthetic construction.
+ *   7. Trace-based: over several real generated puzzles at a partial
  *      masking, confirm the per-cage pointing/claiming technique
  *      (ported from keen.c's solver_clue_candidate() DIFF_HARD mode)
  *      actually fires at least once.
- *   7. Trace-based, same style: confirm exhaustive naked/hidden subset
+ *   8. Trace-based, same style: confirm exhaustive naked/hidden subset
  *      elimination actually reaches size >= 4 (impossible for the
  *      previous version of this file, which capped subsets at size 3)
  *      at least once across w=8/w=9 puzzles.
- *   7b. Trace-based, same style: confirm the whole-grid single-digit
+ *   8b. Trace-based, same style: confirm the whole-grid single-digit
  *      row/column technique (ported from latin_solver_diff_set()'s
  *      extreme mode -- "X-wing" and its generalisations) actually
  *      fires at least once.
- *   8. Fuzz/regression: for many random partial-clue maskings of many
+ *   9. Fuzz/regression: for many random partial-clue maskings of many
  *      real generated Keen puzzles (sizes 4-9), assert every digit
  *      keen_human_solver() reports agrees with keen_forced_solver()'s
  *      (soundness: never a wrong digit) -- and separately, that its
@@ -44,7 +51,7 @@
  *      tell" on some of the larger/heavily-masked trials -- only the
  *      former counts as a subset-property violation; see that
  *      function's doc comment.
- *   9. On the fully-specified (no masking) puzzles from test 8, confirm
+ *   10. On the fully-specified (no masking) puzzles from test 9, confirm
  *      keen_human_solver() actually solves a healthy fraction of them
  *      completely (sanity check that the technique set is not vacuous).
  *
@@ -75,6 +82,7 @@ extern bool get_puzzle_geometry_ex(const game_params *params, const char *desc,
 
 #define C_NO_CLUE 0x00000000UL
 #define C_ADD     0x20000000UL
+#define C_MUL     0x40000000UL
 #define C_SUB     0x60000000UL
 #define C_DIV     0x80000000UL
 
@@ -253,6 +261,159 @@ static void test_hidden_pair(void)
               out[2] == '3' && out[3] == '4' && out[4] == '5');
         check("hidden-pair: (0,0),(0,1) left undetermined (still {1,2} each)",
               out[0] == '.' && out[1] == '.');
+        free(out);
+    }
+    dsf_free(dsf);
+}
+
+/*
+ * ---- User-reported worked examples requiring the "claiming" technique ----
+ *
+ * All three of these are 6x6 puzzles with only a handful of cages
+ * visible near the top-left, reported directly (by hand-worked example,
+ * not generated) as scenarios this solver ought to complete but, before
+ * "claiming" (unit -> cage: a digit confined within a row/column to
+ * cells that all belong to one cage lets that cage's other tuples be
+ * pruned) was added, stalled on. Each one is checked against the exact
+ * forced cells the hand-worked example describes, confirmed here to
+ * match this solver's actual output on the current, deployed source
+ * (not just the earlier hand/trace analysis that motivated the fix).
+ */
+
+/*
+ * Example 1: cages aabbcd / ....cd (a=(0,0)-(0,1) DIV 2, b=(0,2)-(0,3)
+ * ADD 5, c=(0,4)-(1,4) DIV 2, d=(0,5)-(1,5) ADD 8). The 5 in row 0 must
+ * go in cage d (-> cage d = {5,3}); that eliminates 3, and then 6, from
+ * cage c's top cell; with 6 excluded from cages b/c/d's row-0 cells, the
+ * 6 in row 0 must go in cage a (-> cage a = {3,6}); that eliminates
+ * {2,3} from cage b (naked-pair effect on row 0), forcing cage b =
+ * {1,4}; that eliminates {3,6} and {1,4} from cage c's top cell,
+ * forcing it to 2. Cages a and b are correctly left undetermined at the
+ * individual-cell level -- only their pair membership is provable.
+ */
+static void test_claiming_worked_example_1(void)
+{
+    int w = 6, a = 36;
+    DSF *dsf = dsf_new_min(a);
+    unsigned long clues[36];
+    memset(clues, 0, sizeof(clues));
+
+    dsf_merge(dsf, 0*w+0, 0*w+1);
+    clues[dsf_minimal(dsf, 0*w+0)] = C_DIV | 2;   /* cage a */
+    dsf_merge(dsf, 0*w+2, 0*w+3);
+    clues[dsf_minimal(dsf, 0*w+2)] = C_ADD | 5;   /* cage b */
+    dsf_merge(dsf, 0*w+4, 1*w+4);
+    clues[dsf_minimal(dsf, 0*w+4)] = C_DIV | 2;   /* cage c */
+    dsf_merge(dsf, 0*w+5, 1*w+5);
+    clues[dsf_minimal(dsf, 0*w+5)] = C_ADD | 8;   /* cage d */
+
+    char *out = keen_human_solver(w, dsf, clues);
+    check("worked-1: solver returns a result", out != NULL);
+    if (out) {
+        check("worked-1: (0,4) forced to 2", out[0*w+4] == '2');
+        check("worked-1: (0,5) forced to 5", out[0*w+5] == '5');
+        check("worked-1: (1,5) forced to 3", out[1*w+5] == '3');
+        {
+            int i, extra = 0;
+            int forced_ok[3] = {0*w+4, 0*w+5, 1*w+5};
+            for (i = 0; i < a; i++) {
+                bool is_expected = (i == forced_ok[0] || i == forced_ok[1] ||
+                                     i == forced_ok[2]);
+                if (!is_expected && out[i] != '.') extra++;
+            }
+            check("worked-1: nothing else forced (cages a,b correctly "
+                  "left at the pair level)", extra == 0);
+        }
+        free(out);
+    }
+    dsf_free(dsf);
+}
+
+/*
+ * Example 2: cages aabcc. / ..b... (a=(0,0)-(0,1) SUB 4, b=(0,2)-(1,2)
+ * MUL 6, c=(0,3)-(0,4) MUL 6). The last cell of row 0, (0,5), must be 4
+ * (the only cell that can hold it); that forces 5 into cage a (-> cage
+ * a = {1,5}); that eliminates 1 from cage c, forcing cage c = {2,3};
+ * that eliminates {2,3} from cage b's row-0 cell, forcing it to 6, and
+ * therefore the other cage-b cell to 1.
+ */
+static void test_claiming_worked_example_2(void)
+{
+    int w = 6, a = 36;
+    DSF *dsf = dsf_new_min(a);
+    unsigned long clues[36];
+    memset(clues, 0, sizeof(clues));
+
+    dsf_merge(dsf, 0*w+0, 0*w+1);
+    clues[dsf_minimal(dsf, 0*w+0)] = C_SUB | 4;   /* cage a */
+    dsf_merge(dsf, 0*w+2, 1*w+2);
+    clues[dsf_minimal(dsf, 0*w+2)] = C_MUL | 6;   /* cage b */
+    dsf_merge(dsf, 0*w+3, 0*w+4);
+    clues[dsf_minimal(dsf, 0*w+3)] = C_MUL | 6;   /* cage c */
+
+    char *out = keen_human_solver(w, dsf, clues);
+    check("worked-2: solver returns a result", out != NULL);
+    if (out) {
+        check("worked-2: (0,2) forced to 6", out[0*w+2] == '6');
+        check("worked-2: (1,2) forced to 1", out[1*w+2] == '1');
+        check("worked-2: (0,5) forced to 4", out[0*w+5] == '4');
+        {
+            int i, extra = 0;
+            int forced_ok[3] = {0*w+2, 1*w+2, 0*w+5};
+            for (i = 0; i < a; i++) {
+                bool is_expected = (i == forced_ok[0] || i == forced_ok[1] ||
+                                     i == forced_ok[2]);
+                if (!is_expected && out[i] != '.') extra++;
+            }
+            check("worked-2: nothing else forced (cages a,c correctly "
+                  "left at the pair level)", extra == 0);
+        }
+        free(out);
+    }
+    dsf_free(dsf);
+}
+
+/*
+ * Example 3: cages aabcc. / ..b... (a=(0,0)-(0,1) SUB 1, b=(0,2)-(1,2)
+ * MUL 20, c=(0,3)-(0,4) ADD 6). Cage b is forced to {4,5} (only pair
+ * multiplying to 20). Cage c (sum 6) is {1,5} or {2,4}; whichever it
+ * is, cage b's row-0 cell must be the OTHER of {4,5}, which combined
+ * with row-Latin bookkeeping shows the {2,4} branch leaves no valid
+ * diff-1 pair for cage a among the digits left over -- so cage c must
+ * be {1,5} (forcing cage b's row-0 cell to 4, its row-1 cell to 5), and
+ * cage a is left at {2,3} with the remaining row-0 cell forced to 6.
+ */
+static void test_claiming_worked_example_3(void)
+{
+    int w = 6, a = 36;
+    DSF *dsf = dsf_new_min(a);
+    unsigned long clues[36];
+    memset(clues, 0, sizeof(clues));
+
+    dsf_merge(dsf, 0*w+0, 0*w+1);
+    clues[dsf_minimal(dsf, 0*w+0)] = C_SUB | 1;   /* cage a */
+    dsf_merge(dsf, 0*w+2, 1*w+2);
+    clues[dsf_minimal(dsf, 0*w+2)] = C_MUL | 20;  /* cage b */
+    dsf_merge(dsf, 0*w+3, 0*w+4);
+    clues[dsf_minimal(dsf, 0*w+3)] = C_ADD | 6;   /* cage c */
+
+    char *out = keen_human_solver(w, dsf, clues);
+    check("worked-3: solver returns a result", out != NULL);
+    if (out) {
+        check("worked-3: (0,2) forced to 4", out[0*w+2] == '4');
+        check("worked-3: (1,2) forced to 5", out[1*w+2] == '5');
+        check("worked-3: (0,5) forced to 6", out[0*w+5] == '6');
+        {
+            int i, extra = 0;
+            int forced_ok[3] = {0*w+2, 1*w+2, 0*w+5};
+            for (i = 0; i < a; i++) {
+                bool is_expected = (i == forced_ok[0] || i == forced_ok[1] ||
+                                     i == forced_ok[2]);
+                if (!is_expected && out[i] != '.') extra++;
+            }
+            check("worked-3: nothing else forced (cages a,c correctly "
+                  "left at the pair level)", extra == 0);
+        }
         free(out);
     }
     dsf_free(dsf);
@@ -563,6 +724,9 @@ int main(void)
     test_row_total();
     test_naked_pair();
     test_hidden_pair();
+    test_claiming_worked_example_1();
+    test_claiming_worked_example_2();
+    test_claiming_worked_example_3();
     test_pointing_fires();
     test_subset_size4_fires();
     test_extreme_set_fires();
