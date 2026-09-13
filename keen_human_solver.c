@@ -40,56 +40,69 @@
  * fixed order, repeatedly, until a full pass changes nothing)
  * -------------------------------------------------------------------
  *
- *  1. Cage candidate elimination (per-cell support, above).
- *  2. Row/column naked singles and hidden singles -- standard.
- *  3. Row/column naked and hidden SUBSETS of size 2 and 3: m cells whose
+ * This technique set is a direct port of the reasoning keen.c's own
+ * difficulty-graded solver() uses at DIFF_EXTREME (built on latin.c's
+ * generic Latin-square solving framework), MINUS its one bifurcating
+ * step (recursion/guessing, which starts only at DIFF_UNREASONABLE and
+ * is deliberately never used here) and MINUS forcing chains
+ * (latin_solver_forcing) -- everything else solver() can prove without
+ * guessing, this file can prove too, plus one technique solver() itself
+ * does not have (residual-sum cages, item 5 below):
+ *
+ *  1. Cage candidate elimination (per-cell support): a value not used
+ *     by ANY surviving complete assignment of a cage's own cells is
+ *     removed from that cell -- equivalent to solver_clue_candidate()'s
+ *     DIFF_NORMAL mode in keen.c, computed here from the cage's
+ *     explicit tuple list instead of an inline recursive enumeration.
+ *  2. Per-cage pointing/claiming (cage->row and cage->column
+ *     restriction): for a cage and one row (or column) it touches, if
+ *     some digit appears in that row's slice of the cage in EVERY
+ *     surviving tuple, that digit must appear somewhere in the cage's
+ *     part of the row -- so it can be eliminated from the rest of the
+ *     row outside the cage. Direct port of solver_clue_candidate()'s
+ *     DIFF_HARD mode (there expressed as a bitmap-AND over candidate
+ *     layouts; here as a bitmask AND over cage->tuples[]).
+ *  3. Row/column naked and hidden SUBSETS, exhaustively, of every size
+ *     from 1 up to floor(w/2) (checking beyond that adds nothing new,
+ *     by duality: a naked subset of size m is the same fact as a
+ *     hidden subset of size w-m elsewhere in the unit): m cells whose
  *     combined candidates are exactly m values ("naked"), or m values
  *     whose combined candidate cells are exactly m cells ("hidden"),
  *     let every other cell/value in the unit be pruned accordingly.
- *  4. Synthetic residual-sum cages: for a row or column with one or
+ *     Port of latin_solver_diff_set()'s non-extreme (row-only /
+ *     column-only) mode -- w <= 9 keeps the 2^w subset enumeration this
+ *     uses cheap regardless of size.
+ *  4. Whole-grid single-digit row/column set elimination ("X-wing" and
+ *     its larger generalisations, swordfish/jellyfish/...): for one
+ *     digit d, if d's still-possible columns among some set of k whole
+ *     rows number exactly k, d can be eliminated from those columns in
+ *     every OTHER row (and symmetrically, rows <-> columns). Port of
+ *     latin_solver_diff_set()'s extreme mode -- the one piece of
+ *     DIFF_EXTREME reasoning that ignores cages entirely, operating
+ *     purely on the Latin-square (each digit once per row/column)
+ *     constraint.
+ *  5. Synthetic residual-sum cages: for a row or column with one or
  *     more visible addition cages entirely contained in it, the
  *     leftover cells must sum to (the unit's fixed total) minus (those
  *     cages' targets) -- folded in as one more addition cage over
  *     exactly those leftover cells, so it gets the exact same
- *     candidate-elimination treatment as any other cage (this is what
- *     lets "three cells sum to 10, next two sum to 7" force a width-6
- *     row's last cell to 4, purely from row-sum arithmetic).
- *  5. Row/column-GROUP digit-set capacity/counting deduction -- the
- *     general technique the project spec asks for by name. For a group
- *     G of k whole rows (or k whole columns) and a set S of 1 or 2
- *     digits, exactly k*|S| of G's cells hold a value in S, in ANY
- *     completion (each of the k rows/columns contains each digit
- *     exactly once). Summing every cage's minimum-occurrence-of-S
- *     (technique 1 above) over the REAL cages (never a synthetic
- *     residual-sum cage from technique 4 -- see Cage.is_residual's
- *     comment for why a residual cage can overlap a real cage's cells,
- *     which would make summing their guarantees unsound) entirely
- *     confined to G gives a sound lower bound "demand" on how many of
- *     that capacity those cages alone already require, since real
- *     cages always partition the grid and so are guaranteed pairwise
- *     disjoint:
- *       (a) if demand == capacity exactly, every cell of G NOT
- *           belonging to one of those confined cages cannot hold a
- *           value in S (the capacity is already fully spoken for) --
- *           this is the row/column-total technique (4) generalised
- *           from a single arithmetic sum to any digit or digit pair,
- *           and to combinations of more than one row/column at once.
- *       (b) for a specific confined cage C and one of its surviving
- *           tuples T: if using T would push the demand from every OTHER
- *           confined cage plus T's own contribution of S past capacity,
- *           T can never be part of a completion -- remove it from C's
- *           tuple list. This is exactly the project spec's worked
- *           example: two rows have exactly two 3s and two 6s between
- *           them (capacity 4 for S={3,6}); if three cages there already
- *           each guarantee at least one of {3,6} (demand >= 3) and a
- *           fourth cage has a candidate tuple using both a 3 and a 6 at
- *           once (contributing 2), 3 + 2 = 5 > 4 is impossible, so that
- *           tuple is eliminated.
- *     See the file-level comment further down (search for "GROUP
- *     CAPACITY") for the soundness argument and the scope this
- *     implementation deliberately caps (group size <= 3, digit-set
- *     size <= 2) to keep the search over combinations bounded -- both
- *     caps are named constants and easy to widen.
+ *     candidate-elimination and pointing treatment (techniques 1-2
+ *     above) as any other cage. This is NOT part of solver()/latin.c
+ *     (see the comment above get_forced_cells() in keen.c, which
+ *     documents solver()/DIFF_EXTREME lacking any notion of "this
+ *     row's cells always sum to a fixed constant") -- it is this file's
+ *     one addition beyond what was ported, kept because dropping it
+ *     would be a strict regression for exactly the puzzles it was
+ *     originally added to catch (e.g. "three cells sum to 10, next two
+ *     sum to 7" forcing a width-6 row's last cell to 4).
+ *
+ * Deliberately NOT ported: forcing chains (latin_solver_forcing) --
+ * DIFF_EXTREME's remaining technique, a BFS over two-candidate-cell
+ * chains. Everything above already goes well beyond what the previous
+ * (group-capacity-based) version of this file could do; forcing chains
+ * are left as a possible future addition rather than risk their
+ * considerably trickier bookkeeping under this rewrite's time budget --
+ * see the project's progress notes for this session's scope decision.
  *
  * None of the above ever performs a trial assignment: every removal
  * (of a domain value or of a cage tuple) is justified purely by what
@@ -109,10 +122,9 @@
  * many random partial-clue states of real generated puzzles and checks
  * that every digit this solver reports agrees with the exact solver --
  * see auxiliary/keen-human-solver-test.c). It is not complete: there
- * exist forced cells (particularly ones only provable via full
- * backtracking search, or via counting arguments over digit sets larger
- * than 2, or groups larger than 3 rows/columns) that this file will
- * report as undetermined ('.') even though they are mathematically
+ * exist forced cells (provable only via full backtracking search, or via
+ * a forcing chain -- see "Deliberately NOT ported" above) that this file
+ * will report as undetermined ('.') even though they are mathematically
  * forced. That incompleteness is the entire point of this file existing
  * separately from keen_forced_solver() -- see keen_human_solver.h.
  */
@@ -156,15 +168,6 @@
 #define MAX_TUPLES 4096
 #define CAGE_ENUM_BUDGET 300000
 
-/* Largest row/column-group size the capacity rule (technique 5 above)
- * considers, and the largest digit-set size within a group. Both are
- * small, named constants specifically so they can be widened later
- * without touching the algorithm -- see the file header for why these
- * particular caps were chosen (bounding the number of combinations
- * checked each round, not the underlying technique). */
-#define MAX_GROUP_SIZE 3
-#define MAX_SET_SIZE 2
-
 typedef struct {
     int op;                 /* C_ADD/C_MUL/C_SUB/C_DIV/C_NO_CLUE */
     long value;
@@ -187,40 +190,6 @@ typedef struct {
     int ntuples;
     unsigned char (*tuples)[MAX_CAGE_CELLS];
 
-    /* Derived from the tuple list whenever tuples_valid: mincount[d]
-     * (1<=d<=w) is the fewest times digit d appears in any one
-     * surviving tuple; mincount_pair[d1][d2] (1<=d1<d2<=w) is the same
-     * for "d1 or d2 combined", i.e. min over tuples of (count of d1) +
-     * (count of d2) in that tuple. Index 0 of each array is unused. */
-    int mincount[MAX_W + 1];
-    int mincount_pair[MAX_W + 1][MAX_W + 1];
-
-    /*
-     * true for a synthetic residual-sum cage (see build_cages()), false
-     * for a real cage extracted from the puzzle's own clues. Real
-     * cages always partition the grid -- every cell belongs to
-     * EXACTLY one -- so they are guaranteed pairwise cell-disjoint. A
-     * residual cage is NOT guaranteed disjoint from every other cage:
-     * it covers a unit's "leftover" cells (those not covered by some
-     * OTHER cage entirely contained in that same unit), but a cage
-     * that spans multiple rows/columns (like a vertical or L-shaped
-     * cage) is never "contained" in any one unit and so is never
-     * excluded from a residual cage's leftover-cell computation --
-     * meaning a residual cage's cells can genuinely overlap a real
-     * cage's cells. The group-capacity technique's demand computation
-     * (see apply_group_capacity()) sums mincount_S over the cages it
-     * considers on the assumption that they are pairwise disjoint
-     * (summing lower bounds on disjoint cell-sets is what makes the
-     * sum itself a valid lower bound on the group's total) -- so it
-     * must restrict itself to is_residual==false cages only, or an
-     * overlapping residual cage's guaranteed occurrences could be
-     * counted twice (once via itself, once via the real cage sharing
-     * its cell), inflating demand past what is actually true and
-     * risking a false contradiction. This field exists purely to let
-     * that restriction be applied.
-     */
-    bool is_residual;
-
     /*
      * true iff some cell of this cage has had its domain change since
      * this cage was last (re-)enumerated -- see mark_dirty(). Only
@@ -234,16 +203,16 @@ typedef struct {
     bool dirty;
 
     /*
-     * Meaningful only for a residual cage (is_residual == true), used
-     * only by the incremental/warm-start API below (KeenHumanIncSolver):
-     * true iff this residual slot currently covers at least one leftover
-     * cell (n > 0). A residual cage that has never been activated (no
-     * contained ADD cage revealed yet in its row/column) and one that
-     * was activated but has since been fully covered again (every
-     * position now covered by some revealed contained ADD cage) are
-     * both represented as n == 0 and behave identically to every
-     * downstream consumer (apply_cage_support, revise_unit_subsets's
-     * caller, cage_confined_to, the group-capacity sums) -- a 0-cell
+     * Meaningful only for a synthetic residual-sum cage (see
+     * build_cages()), used only by the incremental/warm-start API below
+     * (KeenHumanIncSolver): true iff this residual slot currently covers
+     * at least one leftover cell (n > 0). A residual cage that has never
+     * been activated (no contained ADD cage revealed yet in its
+     * row/column) and one that was activated but has since been fully
+     * covered again (every position now covered by some revealed
+     * contained ADD cage) are both represented as n == 0 and behave
+     * identically to every downstream consumer (apply_cage_support,
+     * apply_cage_pointing, revise_unit_subsets's caller) -- a 0-cell
      * C_ADD cage is a complete no-op everywhere. This flag exists purely
      * so the incremental reveal code can tell "not yet started" apart
      * from "fully covered" when deciding whether to reinitialize versus
@@ -270,7 +239,15 @@ typedef struct {
     int nowners[MAX_A];
     int owners[MAX_A][MAX_CELL_OWNERS];
     bool row_dirty[MAX_W], col_dirty[MAX_W];
-    bool group_capacity_dirty;
+
+    /* Set whenever ANY cell's domain changes anywhere on the grid; only
+     * cleared right before the whole-grid single-digit set-elimination
+     * pass (technique 4, apply_extreme_digit_sets()) runs, since that
+     * technique isn't confined to one cage/row/column the way the
+     * others are and so has no narrower dirty granularity to exploit --
+     * a pure performance gate, same contract as row_dirty/col_dirty/
+     * Cage.dirty (see mark_dirty()'s comment). */
+    bool grid_dirty;
 
     FILE *trace;
 } Solver;
@@ -307,7 +284,7 @@ static void mark_dirty(Solver *s, int cell)
         s->cages[s->owners[cell][k]].dirty = true;
     s->row_dirty[cell_row(s, cell)] = true;
     s->col_dirty[cell_col(s, cell)] = true;
-    s->group_capacity_dirty = true;
+    s->grid_dirty = true;
 }
 
 /* Remove `removemask` bits from cell's domain. Returns false if the
@@ -418,7 +395,6 @@ static int build_cages(int w, DSF *dsf, unsigned long *clues, Cage **out_cages)
                     rc->op = (int)C_ADD;
                     rc->value = total - ssum;
                     rc->n = 0;
-                    rc->is_residual = true;
                     for (pos = 0; pos < w; pos++) {
                         if (!covered[pos]) {
                             int cell = (dim == 0) ? (u * w + pos) : (pos * w + u);
@@ -557,63 +533,17 @@ static void enum_recurse(EnumCtx *ctx, int idx, long acc, bool *overflow)
 
 /*
  * Rebuilds cage->tuples from scratch against the CURRENT domains. On
- * success (tuples_valid = true), also derives mincount/mincount_pair.
- * On overflow (tuples_valid = false), the tuple list and every fact
- * derived from it are discarded for this round -- NOT truncated -- so
- * that no rule ever draws a conclusion from a partial enumeration.
- * A partial list would be unsound in general: a cell-support removal
- * based on "no *scanned* tuple uses this value" could wrongly discard a
- * value whose only support was in a tuple enumeration never reached,
- * and a mincount computed from a subset of tuples could overstate the
- * true minimum (which can only go down as more tuples are found) --
- * either mistake could cascade into reporting a wrong digit. Skipping
- * the cage entirely this round has no such risk: it only costs
- * completeness (a missed deduction, to be retried once other rules
- * shrink the domains and the same enumeration becomes cheap enough to
- * finish), never soundness.
+ * overflow (tuples_valid = false), the tuple list is discarded for this
+ * round -- NOT truncated -- so that no rule ever draws a conclusion from
+ * a partial enumeration. A partial list would be unsound in general: a
+ * cell-support removal based on "no *scanned* tuple uses this value"
+ * could wrongly discard a value whose only support was in a tuple
+ * enumeration never reached, which could cascade into reporting a wrong
+ * digit. Skipping the cage entirely this round has no such risk: it
+ * only costs completeness (a missed deduction, to be retried once other
+ * rules shrink the domains and the same enumeration becomes cheap
+ * enough to finish), never soundness.
  */
-/*
- * (Re)derives cage->mincount[]/mincount_pair[][] from cage->tuples[0..
- * ntuples-1] as they currently stand. Factored out of enumerate_cage()
- * so that apply_group_capacity()'s rule (b) -- which prunes tuples
- * in-place without a full re-enumeration -- can call this immediately
- * after pruning to keep mincount/mincount_pair in sync with the tuple
- * list they're supposed to summarize. Without this, a cage whose
- * tuples were pruned by rule (b) keeps stale (too-loose) mincount
- * values until it next happens to be re-enumerated for an unrelated
- * reason (its own dirty flag is never set by tuple pruning alone,
- * since pruning isn't a domain change) -- a real completeness gap:
- * still sound (a stale mincount is always <= the true, tighter one,
- * since removing tuples can only raise the true minimum), but able to
- * silently miss a further group-capacity deduction that the freshly
- * -tightened bound would have enabled, for as long as nothing else
- * happens to mark that cage dirty. Caller must ensure cage->ntuples > 0
- * (a cage with zero surviving tuples is a contradiction, handled by
- * the caller before this would be reached).
- */
-static void recompute_mincounts(Solver *s, Cage *cage)
-{
-    int d, t, i;
-    for (d = 1; d <= s->w; d++) cage->mincount[d] = cage->n + 1;
-    for (d = 1; d <= s->w; d++)
-        for (i = d + 1; i <= s->w; i++)
-            cage->mincount_pair[d][i] = cage->n + 1;
-
-    for (t = 0; t < cage->ntuples; t++) {
-        int count[MAX_W + 1];
-        for (d = 1; d <= s->w; d++) count[d] = 0;
-        for (i = 0; i < cage->n; i++) count[cage->tuples[t][i]]++;
-        for (d = 1; d <= s->w; d++)
-            if (count[d] < cage->mincount[d]) cage->mincount[d] = count[d];
-        for (d = 1; d <= s->w; d++)
-            for (i = d + 1; i <= s->w; i++) {
-                int combined = count[d] + count[i];
-                if (combined < cage->mincount_pair[d][i])
-                    cage->mincount_pair[d][i] = combined;
-            }
-    }
-}
-
 static bool enumerate_cage(Solver *s, Cage *cage)
 {
     EnumCtx ctx;
@@ -642,8 +572,6 @@ static bool enumerate_cage(Solver *s, Cage *cage)
     if (cage->ntuples == 0)
         return false; /* no completion at all for this cage: contradiction */
 
-    recompute_mincounts(s, cage);
-
     return true;
 }
 
@@ -671,105 +599,90 @@ static bool apply_cage_support(Solver *s, Cage *cage, bool *changed)
 }
 
 /* ------------------------------------------------------------------
- * Row/column naked & hidden subset elimination (sizes 1..3, which
- * covers the classic "single" as the m==1 case of each).
+ * Row/column naked & hidden subset elimination, EXHAUSTIVE over every
+ * size from 1 to floor(n/2) -- port of latin_solver_diff_set()'s
+ * non-extreme mode (latin.c), which achieves the same result via a
+ * different algorithm (a "rectangle of zeroes" search over a boolean
+ * matrix); this version instead enumerates subsets directly as
+ * bitmasks against this file's own domain[] representation, which is
+ * simpler here and just as cheap: n, s->w <= 9 always (Keen's maximum
+ * grid size), so a 2^n or 2^w enumeration is at most 512 iterations.
+ * Checking sizes beyond floor(n/2) adds nothing new: a naked subset of
+ * size m is the exact same fact as a hidden subset of size n-m
+ * elsewhere in the same unit, so running both the naked and hidden
+ * loops up to floor(n/2) each already covers every size with no gaps.
  * ------------------------------------------------------------------ */
 
 static bool revise_unit_subsets(Solver *s, const int *cells, int n, bool *changed)
 {
-    int maxm = n < 3 ? n : 3;
-    int m;
+    int maxm = n / 2;
+    unsigned int subset;
 
-    for (m = 1; m <= maxm; m++) {
-        /* ---- naked subsets of size m: choose m of the n cells ---- */
-        int idx[3];
-        int i0, i1, i2;
-        for (i0 = 0; i0 < n; i0++) {
-            idx[0] = i0;
-            for (i1 = (m >= 2 ? i0 + 1 : -1); i1 < (m >= 2 ? n : 0); i1++) {
-                if (m >= 2) idx[1] = i1;
-                for (i2 = (m >= 3 ? i1 + 1 : -1); i2 < (m >= 3 ? n : 0); i2++) {
-                    if (m >= 3) idx[2] = i2;
-
-                    {
-                        unsigned short u = 0;
-                        int k;
-                        for (k = 0; k < m; k++) u |= s->domain[cells[idx[k]]];
-                        if (popcount16(u) != m) continue;
-                        /* This m-cell subset's candidates are exactly
-                         * these m values: remove them from every other
-                         * cell in the unit. */
-                        for (k = 0; k < n; k++) {
-                            bool ismember = false;
-                            int j;
-                            for (j = 0; j < m; j++)
-                                if (idx[j] == k) { ismember = true; break; }
-                            if (ismember) continue;
-                            if (s->domain[cells[k]] & u) {
-                                if (s->trace)
-                                    fprintf(s->trace,
-                                            "  naked-%d %04x among %d cells -> "
-                                            "prune cell (%d,%d)\n",
-                                            m, (unsigned)u, m,
-                                            cell_row(s, cells[k]), cell_col(s, cells[k]));
-                                if (!remove_from_domain(s, cells[k], u, changed))
-                                    return false;
-                            }
-                        }
-                    }
-                    if (m < 3) break;
+    /* ---- naked subsets: every nonempty subset of the n cells,
+     * of popcount 1..maxm ---- */
+    for (subset = 1; subset < (1u << n); subset++) {
+        int m = popcount16((unsigned short)subset);
+        if (m < 1 || m > maxm) continue;
+        {
+            unsigned short u = 0;
+            int k;
+            for (k = 0; k < n; k++)
+                if (subset & (1u << k)) u |= s->domain[cells[k]];
+            if (popcount16(u) != m) continue;
+            /* This m-cell subset's candidates are exactly these m
+             * values: remove them from every other cell in the unit. */
+            for (k = 0; k < n; k++) {
+                if (subset & (1u << k)) continue;
+                if (s->domain[cells[k]] & u) {
+                    if (s->trace)
+                        fprintf(s->trace,
+                                "  naked-%d %04x among %d cells -> "
+                                "prune cell (%d,%d)\n",
+                                m, (unsigned)u, m,
+                                cell_row(s, cells[k]), cell_col(s, cells[k]));
+                    if (!remove_from_domain(s, cells[k], u, changed))
+                        return false;
                 }
-                if (m < 2) break;
             }
         }
+    }
 
-        /* ---- hidden subsets of size m: choose m of the w digits ---- */
+    /* ---- hidden subsets: every nonempty subset of the w digits,
+     * of popcount 1..maxm ---- */
+    for (subset = 1; subset < (1u << s->w); subset++) {
+        int m = popcount16((unsigned short)subset);
+        if (m < 1 || m > maxm) continue;
         {
-            int d0, d1, d2;
-            for (d0 = 1; d0 <= s->w; d0++) {
-                idx[0] = d0;
-                for (d1 = (m >= 2 ? d0 + 1 : -1); d1 < (m >= 2 ? s->w + 1 : 0); d1++) {
-                    if (m >= 2) idx[1] = d1;
-                    for (d2 = (m >= 3 ? d1 + 1 : -1); d2 < (m >= 3 ? s->w + 1 : 0); d2++) {
-                        if (m >= 3) idx[2] = d2;
-
-                        {
-                            unsigned short vmask = 0;
-                            unsigned short cellmask_bits = 0; /* which of the n
-                                                                  cells (by
-                                                                  index into
-                                                                  cells[]) hold
-                                                                  >=1 of these
-                                                                  values */
-                            int k, cellcount = 0;
-                            for (k = 0; k < m; k++) vmask |= (unsigned short)(1u << idx[k]);
-                            for (k = 0; k < n; k++) {
-                                if (s->domain[cells[k]] & vmask) {
-                                    cellmask_bits |= (unsigned short)(1u << k);
-                                    cellcount++;
-                                }
-                            }
-                            if (cellcount != m) continue;
-                            /* These m values only ever appear (between
-                             * them) in exactly these m cells: restrict
-                             * those cells to only these values. */
-                            for (k = 0; k < n; k++) {
-                                if (!(cellmask_bits & (1u << k))) continue;
-                                if (s->domain[cells[k]] & ~vmask) {
-                                    if (s->trace)
-                                        fprintf(s->trace,
-                                                "  hidden-%d values %04x -> "
-                                                "restrict cell (%d,%d)\n",
-                                                m, (unsigned)vmask,
-                                                cell_row(s, cells[k]), cell_col(s, cells[k]));
-                                    if (!assign_domain(s, cells[k], vmask, changed))
-                                        return false;
-                                }
-                            }
-                        }
-                        if (m < 3) break;
-                    }
-                    if (m < 2) break;
+            /* subset's bit (d-1) <-> digit d, so shift left 1 to land
+             * on domain[]'s own bit-per-digit convention (bit 0 unused,
+             * digit d is bit d). */
+            unsigned short vmask = (unsigned short)(subset << 1);
+            unsigned short cellmask_bits = 0; /* which of the n cells
+                                                  (by index into cells[])
+                                                  hold >=1 of these
+                                                  values */
+            int k, cellcount = 0;
+            for (k = 0; k < n; k++) {
+                if (s->domain[cells[k]] & vmask) {
+                    cellmask_bits |= (unsigned short)(1u << k);
+                    cellcount++;
+                }
+            }
+            if (cellcount != m) continue;
+            /* These m values only ever appear (between them) in
+             * exactly these m cells: restrict those cells to only
+             * these values. */
+            for (k = 0; k < n; k++) {
+                if (!(cellmask_bits & (1u << k))) continue;
+                if (s->domain[cells[k]] & ~vmask) {
+                    if (s->trace)
+                        fprintf(s->trace,
+                                "  hidden-%d values %04x -> "
+                                "restrict cell (%d,%d)\n",
+                                m, (unsigned)vmask,
+                                cell_row(s, cells[k]), cell_col(s, cells[k]));
+                    if (!assign_domain(s, cells[k], vmask, changed))
+                        return false;
                 }
             }
         }
@@ -780,10 +693,8 @@ static bool revise_unit_subsets(Solver *s, const int *cells, int n, bool *change
      * anywhere in the unit is an outright contradiction), and no two
      * cells may be pinned (domain size 1) to the same value. This is
      * subsumed logically by the subset code above whenever it runs to
-     * completion, but is re-checked directly here for cases m's loop
-     * cap (3) doesn't cover (e.g. a genuine hidden-4+ situation, which
-     * this file does not attempt to exploit for a further deduction,
-     * but must still not silently miss an outright contradiction). */
+     * completion, but is re-checked directly here as a cheap explicit
+     * safety net regardless. */
     {
         int i, value;
         unsigned short singles = 0;
@@ -806,111 +717,63 @@ static bool revise_unit_subsets(Solver *s, const int *cells, int n, bool *change
 }
 
 /* ------------------------------------------------------------------
- * Row/column-GROUP digit-set capacity/counting deduction.
- *
- * See the file header ("GROUP CAPACITY") for the full explanation and
- * soundness argument; this section just implements it. `unitmask` is a
- * bitmask of which rows (dim==0) or columns (dim==1) make up the group;
- * `k` is its popcount (the number of whole rows/columns in it).
+ * Per-cage pointing/claiming (technique 2 in the file header). Port of
+ * solver_clue_candidate()'s DIFF_HARD mode in keen.c: there, this is
+ * computed by ANDing a bitmap across every candidate layout found
+ * during an inline recursive enumeration; here, the same AND is taken
+ * directly over the already-enumerated cage->tuples[].
  * ------------------------------------------------------------------ */
 
-/*
- * Whether `cage` participates in the group-capacity technique for this
- * group. Deliberately restricted to REAL cages only (never a synthetic
- * residual-sum cage): real cages always partition the grid -- every
- * cell belongs to exactly one -- so summing mincount_S over every real
- * cage confined to a group is guaranteed sound (a valid sum of
- * disjoint lower bounds). A residual cage is not guaranteed disjoint
- * from other confined cages (see Cage.is_residual's comment for a
- * concrete case where it overlaps a real cage), so including it here
- * could double-count one cell's contribution and inflate demand past
- * what is actually true. Residual cages still fully participate in
- * the ordinary per-cage candidate-elimination technique (technique 1
- * in the file header) via enumerate_cage()/apply_cage_support() --
- * this restriction is specific to the group-capacity sum.
- */
-static bool cage_confined_to(const Cage *cage, int dim, unsigned int unitmask)
+static bool apply_cage_pointing(Solver *s, Cage *cage, bool *changed)
 {
-    unsigned int cagemask;
-    if (cage->is_residual) return false;
-    cagemask = (dim == 0) ? cage->rowmask : cage->colmask;
-    return cagemask != 0 && (cagemask & ~unitmask) == 0;
-}
+    int dim;
 
-/* mincount of digit-set S (1 or 2 digits, d2 == 0 means |S| == 1) for a
- * single cage, or -1 if the cage's tuples aren't currently valid. */
-static int cage_mincount_set(const Cage *cage, int d1, int d2)
-{
-    if (!cage->tuples_valid) return -1;
-    return d2 ? cage->mincount_pair[d1][d2] : cage->mincount[d1];
-}
+    if (!cage->tuples_valid || cage->ntuples == 0) return true;
 
-/* Per-tuple occurrence count of S in one specific candidate tuple. */
-static int tuple_count_set(const Cage *cage, int t, int d1, int d2)
-{
-    int i, c = 0;
-    for (i = 0; i < cage->n; i++) {
-        int v = cage->tuples[t][i];
-        if (v == d1 || (d2 && v == d2)) c++;
-    }
-    return c;
-}
-
-static bool apply_group_capacity(Solver *s, int dim, unsigned int unitmask, int k,
-                                  int d1, int d2, bool *changed)
-{
-    int setsize = d2 ? 2 : 1;
-    int capacity = k * setsize;
-    int demand = 0;
-    int ci;
-
-    for (ci = 0; ci < s->ncages; ci++) {
-        Cage *cage = &s->cages[ci];
-        int mc;
-        if (!cage_confined_to(cage, dim, unitmask)) continue;
-        mc = cage_mincount_set(cage, d1, d2);
-        if (mc < 0) continue; /* unresolved cage: contributes nothing
-                                  (safe under-count, never an over-count) */
-        demand += mc;
-    }
-
-    if (demand > capacity)
-        return false; /* genuine contradiction: more forced occurrences
-                          of S than the group has room for */
-
-    if (demand == capacity && capacity > 0) {
-        /* Rule (a): every group cell not owned by a confined cage
-         * cannot hold a value in S. */
-        int r;
-        for (r = 0; r < s->w; r++) {
-            if (!(unitmask & (1u << r))) continue;
+    for (dim = 0; dim < 2; dim++) {
+        unsigned int unitset = (dim == 0) ? cage->rowmask : cage->colmask;
+        int u;
+        for (u = 0; u < s->w; u++) {
+            if (!(unitset & (1u << u))) continue;
             {
-                int pos;
-                for (pos = 0; pos < s->w; pos++) {
-                    int cell = (dim == 0) ? (r * s->w + pos) : (pos * s->w + r);
-                    bool owned = false;
-                    for (ci = 0; ci < s->ncages; ci++) {
-                        Cage *cage = &s->cages[ci];
-                        int i;
-                        if (!cage_confined_to(cage, dim, unitmask)) continue;
-                        if (!cage->tuples_valid) continue;
-                        for (i = 0; i < cage->n; i++)
-                            if (cage->cells[i] == cell) { owned = true; break; }
-                        if (owned) break;
+                /* must: AND, over every surviving tuple, of the digits
+                 * that tuple assigns within this cage's slice of unit u.
+                 * A digit surviving the AND is guaranteed to appear
+                 * somewhere in cage-cells-in-unit-u no matter which
+                 * completion is real, so it can be eliminated from the
+                 * rest of unit u outside the cage. */
+                unsigned short must = FULL_MASK(s->w);
+                int t;
+                for (t = 0; t < cage->ntuples && must; t++) {
+                    unsigned short here = 0;
+                    int i;
+                    for (i = 0; i < cage->n; i++) {
+                        int cell = cage->cells[i];
+                        int cu = (dim == 0) ? cell_row(s, cell) : cell_col(s, cell);
+                        if (cu == u)
+                            here |= (unsigned short)(1u << cage->tuples[t][i]);
                     }
-                    if (owned) continue;
-                    {
-                        unsigned short smask = (unsigned short)(1u << d1);
-                        if (d2) smask |= (unsigned short)(1u << d2);
-                        if (s->domain[cell] & smask) {
+                    must &= here;
+                }
+                if (!must) continue;
+
+                {
+                    int pos;
+                    for (pos = 0; pos < s->w; pos++) {
+                        int cell = (dim == 0) ? (u * s->w + pos) : (pos * s->w + u);
+                        bool incage = false;
+                        int i;
+                        for (i = 0; i < cage->n; i++)
+                            if (cage->cells[i] == cell) { incage = true; break; }
+                        if (incage) continue;
+                        if (s->domain[cell] & must) {
                             if (s->trace)
                                 fprintf(s->trace,
-                                        "  group-capacity dim=%d units=%03x "
-                                        "S={%d%s%d} demand==capacity==%d -> "
-                                        "prune cell (%d,%d)\n",
-                                        dim, unitmask, d1, d2 ? "," : "", d2,
-                                        capacity, cell_row(s, cell), cell_col(s, cell));
-                            if (!remove_from_domain(s, cell, smask, changed))
+                                        "  pointing dim=%d unit=%d cage@cell%d: "
+                                        "must=%04x -> prune cell (%d,%d)\n",
+                                        dim, u, cage->cells[0], (unsigned)must,
+                                        cell_row(s, cell), cell_col(s, cell));
+                            if (!remove_from_domain(s, cell, must, changed))
                                 return false;
                         }
                     }
@@ -919,104 +782,116 @@ static bool apply_group_capacity(Solver *s, int dim, unsigned int unitmask, int 
         }
     }
 
-    /* Rule (b): per confined cage, eliminate any surviving tuple whose
-     * own contribution to S, combined with every OTHER confined cage's
-     * minimum, would exceed capacity. */
-    for (ci = 0; ci < s->ncages; ci++) {
-        Cage *cage = &s->cages[ci];
-        int mc, demand_others, t, kept;
-        if (!cage_confined_to(cage, dim, unitmask)) continue;
-        if (!cage->tuples_valid) continue;
-        mc = cage_mincount_set(cage, d1, d2);
-        demand_others = demand - mc;
-        if (demand_others + cage->n < capacity)
-            continue; /* even this cage's max possible contribution
-                         (all n cells in S) can't overflow: skip the scan */
+    return true;
+}
 
-        kept = 0;
-        for (t = 0; t < cage->ntuples; t++) {
-            int c = tuple_count_set(cage, t, d1, d2);
-            if (demand_others + c > capacity) {
-                if (s->trace)
-                    fprintf(s->trace,
-                            "  group-capacity dim=%d units=%03x S={%d%s%d}: "
-                            "cage@cell%d tuple %d eliminated (would need %d > %d)\n",
-                            dim, unitmask, d1, d2 ? "," : "", d2,
-                            cage->cells[0], t, demand_others + c, capacity);
-                *changed = true;
-                continue; /* drop this tuple */
+/* ------------------------------------------------------------------
+ * Whole-grid single-digit row/column set elimination (technique 4 in
+ * the file header: "X-wing" and its larger generalisations). Port of
+ * latin_solver_diff_set()'s extreme mode. Unlike every other technique
+ * in this file, this one is cage-agnostic -- it only uses the
+ * Latin-square constraint (each digit exactly once per row/column) --
+ * so it is checked once per digit against the whole grid rather than
+ * per cage or per single unit.
+ * ------------------------------------------------------------------ */
+
+static bool apply_extreme_digit_sets(Solver *s, int digit, bool *changed)
+{
+    unsigned short rowposmask[MAX_W]; /* bit c set iff (r,c) can hold digit */
+    unsigned short colposmask[MAX_W]; /* bit r set iff (r,c) can hold digit */
+    unsigned short bit = (unsigned short)(1u << digit);
+    int maxm = s->w / 2;
+    int r, c;
+    unsigned int subset;
+
+    for (r = 0; r < s->w; r++) {
+        unsigned short m = 0;
+        for (c = 0; c < s->w; c++)
+            if (s->domain[r * s->w + c] & bit) m |= (unsigned short)(1u << c);
+        rowposmask[r] = m;
+    }
+    for (c = 0; c < s->w; c++) {
+        unsigned short m = 0;
+        for (r = 0; r < s->w; r++)
+            if (s->domain[r * s->w + c] & bit) m |= (unsigned short)(1u << r);
+        colposmask[c] = m;
+    }
+
+    /* A subset of rows whose digit's possible columns (union over the
+     * subset) number exactly the subset's own size confines digit to
+     * those columns within those rows -- eliminate it from those
+     * columns in every OTHER row. (Size-1 is an ordinary hidden single
+     * already covered by revise_unit_subsets(); this technique's real
+     * value starts at size 2, the classic "X-wing".) */
+    for (subset = 1; subset < (1u << s->w); subset++) {
+        int m = popcount16((unsigned short)subset);
+        if (m < 1 || m > maxm) continue;
+        {
+            unsigned short u = 0;
+            int k;
+            for (k = 0; k < s->w; k++)
+                if (subset & (1u << k)) u |= rowposmask[k];
+            if (popcount16(u) != m) continue;
+            for (r = 0; r < s->w; r++) {
+                if (subset & (1u << r)) continue;
+                for (c = 0; c < s->w; c++) {
+                    int cell;
+                    if (!(u & (1u << c))) continue;
+                    cell = r * s->w + c;
+                    if (s->domain[cell] & bit) {
+                        if (s->trace)
+                            fprintf(s->trace,
+                                    "  extreme-set digit=%d rows=%03x -> "
+                                    "prune cell (%d,%d)\n",
+                                    digit, subset, r, c);
+                        if (!remove_from_domain(s, cell, bit, changed))
+                            return false;
+                    }
+                }
             }
-            if (kept != t)
-                memcpy(cage->tuples[kept], cage->tuples[t], (size_t)cage->n);
-            kept++;
         }
-        if (kept != cage->ntuples) {
-            cage->ntuples = kept;
-            if (kept == 0)
-                return false; /* every tuple eliminated: contradiction */
-            /* Keep mincount/mincount_pair in sync with the tuple list
-             * we just shrank -- see recompute_mincounts()'s comment for
-             * why this can't just wait for the next re-enumeration. */
-            recompute_mincounts(s, cage);
+    }
+
+    /* Mirror image: a subset of COLUMNS confining digit to that many
+     * rows -- eliminate it from those rows in every other column. */
+    for (subset = 1; subset < (1u << s->w); subset++) {
+        int m = popcount16((unsigned short)subset);
+        if (m < 1 || m > maxm) continue;
+        {
+            unsigned short u = 0;
+            int k;
+            for (k = 0; k < s->w; k++)
+                if (subset & (1u << k)) u |= colposmask[k];
+            if (popcount16(u) != m) continue;
+            for (c = 0; c < s->w; c++) {
+                if (subset & (1u << c)) continue;
+                for (r = 0; r < s->w; r++) {
+                    int cell;
+                    if (!(u & (1u << r))) continue;
+                    cell = r * s->w + c;
+                    if (s->domain[cell] & bit) {
+                        if (s->trace)
+                            fprintf(s->trace,
+                                    "  extreme-set digit=%d cols=%03x -> "
+                                    "prune cell (%d,%d)\n",
+                                    digit, subset, r, c);
+                        if (!remove_from_domain(s, cell, bit, changed))
+                            return false;
+                    }
+                }
+            }
         }
     }
 
     return true;
 }
 
-/* Enumerates every k-combination of {0..w-1} as a bitmask, for
- * k == 1, 2 or 3 (MAX_GROUP_SIZE), calling `body` on each. Kept as
- * explicit nested loops (rather than a generic combinatorial
- * iterator) since k's range is small and fixed. */
-#define FOR_EACH_GROUP(w, k, maskvar, ...) do { \
-    int _u0, _u1, _u2; \
-    for (_u0 = 0; _u0 < (w); _u0++) { \
-        if ((k) == 1) { \
-            unsigned int maskvar = 1u << _u0; \
-            __VA_ARGS__ \
-            continue; \
-        } \
-        for (_u1 = _u0 + 1; _u1 < (w); _u1++) { \
-            if ((k) == 2) { \
-                unsigned int maskvar = (1u << _u0) | (1u << _u1); \
-                __VA_ARGS__ \
-                continue; \
-            } \
-            for (_u2 = _u1 + 1; _u2 < (w); _u2++) { \
-                unsigned int maskvar = (1u << _u0) | (1u << _u1) | (1u << _u2); \
-                __VA_ARGS__ \
-            } \
-        } \
-    } \
-} while (0)
-
-static bool run_group_capacity_pass(Solver *s, bool *changed)
+static bool run_extreme_pass(Solver *s, bool *changed)
 {
-    int dim, k;
-    for (dim = 0; dim < 2; dim++) {
-        for (k = 1; k <= MAX_GROUP_SIZE && k <= s->w; k++) {
-            bool ok = true;
-            FOR_EACH_GROUP(s->w, k, unitmask, {
-                int d1, d2;
-                for (d1 = 1; d1 <= s->w && ok; d1++) {
-                    if (!apply_group_capacity(s, dim, unitmask, k, d1, 0, changed)) {
-                        ok = false;
-                        break;
-                    }
-                    if (MAX_SET_SIZE >= 2) {
-                        for (d2 = d1 + 1; d2 <= s->w; d2++) {
-                            if (!apply_group_capacity(s, dim, unitmask, k, d1, d2, changed)) {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (!ok) break;
-                }
-            });
-            if (!ok) return false;
-        }
-    }
+    int d;
+    for (d = 1; d <= s->w; d++)
+        if (!apply_extreme_digit_sets(s, d, changed))
+            return false;
     return true;
 }
 
@@ -1047,6 +922,9 @@ static bool run_one_pass(Solver *s, bool *changed)
     for (i = 0; i < s->ncages; i++)
         if (!apply_cage_support(s, &s->cages[i], changed))
             return false;
+    for (i = 0; i < s->ncages; i++)
+        if (!apply_cage_pointing(s, &s->cages[i], changed))
+            return false;
 
     for (i = 0; i < s->w; i++) {
         if (!s->row_dirty[i]) continue;
@@ -1069,9 +947,9 @@ static bool run_one_pass(Solver *s, bool *changed)
         }
     }
 
-    if (s->group_capacity_dirty) {
-        s->group_capacity_dirty = false;
-        if (!run_group_capacity_pass(s, changed))
+    if (s->grid_dirty) {
+        s->grid_dirty = false;
+        if (!run_extreme_pass(s, changed))
             return false;
     }
 
@@ -1084,30 +962,17 @@ static bool run_one_pass(Solver *s, bool *changed)
  * non-NULL, is incremented once per run_one_pass() call and used only
  * for s->trace's pass numbering.
  *
- * Known limitation: dirty-gating (Cage.dirty/row_dirty/col_dirty/
- * group_capacity_dirty) is a pure performance mechanism, and this file
- * has one confirmed way for it to leave a rare, extremely narrow
- * completeness gap in place -- see recompute_mincounts()'s comment for
- * the specific (and fixed) case of a cage's mincount/mincount_pair going
- * stale after apply_group_capacity()'s rule (b) prunes its tuples
- * in-place. Fixing that closed the overwhelming majority of observed
- * cases in testing (auxiliary/keen-incremental-solver-test.c), but a
- * single further instance of the same general class was observed in
- * fuzz testing at w=9 (roughly 1 in 1500 reveal steps) whose exact
- * trigger was not pinned down. An unconditional "verify with an extra
- * fully-dirty pass" fix was tried and rejected: it can cascade into
- * many full O(cages) passes on exactly the large, heavily-masked boards
- * this dirty-gating exists to keep fast (the same hang class fixed
- * earlier -- see keen_human_solver.c's history), trading a
- * near-un-observable completeness gap for a real, reproducible
- * performance regression. Given this solver is already a deliberately
- * SOUND BUT INCOMPLETE subset of keen_forced_solver() by design (see
- * keen_human_solver.h), never reporting a wrong digit, an occasional
- * missed deduction in a rare cascade is the acceptable side to err on;
- * a wrong digit would not be. If this gap is ever pinned down precisely,
- * the right fix is another targeted recompute at its specific source
- * (as recompute_mincounts() was for the first one), not a blanket
- * re-verification pass here.
+ * Dirty-gating (Cage.dirty/row_dirty/col_dirty/grid_dirty) is a pure
+ * performance mechanism: every technique either reads a cage's tuples
+ * fresh from enumerate_cage() every time it runs (apply_cage_support,
+ * apply_cage_pointing), or reads domain[] directly with no cached
+ * intermediate state of its own (revise_unit_subsets,
+ * apply_extreme_digit_sets) -- unlike the previous (group-capacity
+ * -based) version of this file, nothing here mutates a cage's tuple
+ * list in place outside enumerate_cage() itself, which is exactly what
+ * used to let a dirty flag go stale relative to derived state computed
+ * from it. So there is no known way left for this dirty-gating to skip
+ * a computation whose result could actually have changed.
  */
 static bool converge_solver(Solver *s, int *rounds)
 {
@@ -1143,7 +1008,7 @@ char *keen_human_solver_trace(int w, DSF *dsf, unsigned long *clues, FILE *trace
     s.ncages = build_cages(w, dsf, clues, &s.cages);
     build_owners(&s);
     for (i = 0; i < w; i++) s.row_dirty[i] = s.col_dirty[i] = true;
-    s.group_capacity_dirty = true;
+    s.grid_dirty = true;
 
     if (!converge_solver(&s, &rounds)) {
         for (i = 0; i < s.ncages; i++) free(s.cages[i].tuples);
@@ -1191,8 +1056,8 @@ char *keen_human_solver(int w, DSF *dsf, unsigned long *clues)
  * undo trail at all: every removal is already permanent. Warm-starting
  * simply keeps one persistent Solver alive across many reveals instead
  * of rebuilding it, and lets the existing dirty-tracking machinery
- * (mark_dirty(), Cage.dirty, row_dirty/col_dirty, group_capacity_dirty)
- * do exactly what it already does in the one-shot loop: skip any
+ * (mark_dirty(), Cage.dirty, row_dirty/col_dirty, grid_dirty) do
+ * exactly what it already does in the one-shot loop: skip any
  * recomputation whose result can't have changed.
  *
  * Cages start out with op == C_NO_CLUE, exactly like any cage this file
@@ -1203,7 +1068,7 @@ char *keen_human_solver(int w, DSF *dsf, unsigned long *clues)
  * this section.
  *
  * The one piece of real bookkeeping this needs is the synthetic
- * row/column residual-sum cages (technique 4 in the file header): which
+ * row/column residual-sum cages (technique 5 in the file header): which
  * cells they cover and what they sum to depends on ALL CURRENTLY
  * REVEALED addition cages contained in that row/column, so revealing
  * one more such cage can shrink an already-active residual cage,
@@ -1232,10 +1097,11 @@ struct KeenHumanIncSolver {
 /* Marks `cg` itself, and every row/column touching one of its cells,
  * dirty -- used whenever a cage's op/value/cell-list changes directly
  * (as opposed to mark_dirty(), which is keyed off a CELL's domain
- * changing). Also unconditionally marks group_capacity_dirty, for the
- * same reason mark_dirty() does: a single cage's tuples changing can in
- * principle affect the group-capacity demand sum for many groups at
- * once, so there is no cheaper sound thing to do than reconsider it. */
+ * changing). Also unconditionally marks grid_dirty, for the same
+ * reason mark_dirty() does: a single cage's tuples changing can in
+ * principle affect apply_extreme_digit_sets()'s whole-grid computation
+ * for many digits at once, so there is no cheaper sound thing to do
+ * than reconsider it. */
 static void mark_cage_and_units_dirty(Solver *s, Cage *cg)
 {
     int k;
@@ -1244,7 +1110,7 @@ static void mark_cage_and_units_dirty(Solver *s, Cage *cg)
         s->row_dirty[cell_row(s, cg->cells[k])] = true;
         s->col_dirty[cell_col(s, cg->cells[k])] = true;
     }
-    s->group_capacity_dirty = true;
+    s->grid_dirty = true;
 }
 
 /* Recomputes row r's (dim==0) or column u's (dim==1) residual cage from
@@ -1391,7 +1257,6 @@ KeenHumanIncSolver *keen_human_solver_create(int w, DSF *dsf)
         rc->op = (int)C_ADD;
         rc->value = 0;
         rc->n = 0;
-        rc->is_residual = true;
         rc->activated = false;
     }
 
@@ -1426,7 +1291,7 @@ KeenHumanIncSolver *keen_human_solver_create(int w, DSF *dsf)
     }
 
     for (i = 0; i < w; i++) s->row_dirty[i] = s->col_dirty[i] = true;
-    s->group_capacity_dirty = true;
+    s->grid_dirty = true;
     s->trace = NULL;
 
     if (!converge_solver(s, NULL)) {

@@ -9,13 +9,18 @@
  *      of a width-6 row from two partial sums alone.
  *   4. A hand-built naked-pair scenario.
  *   5. A hand-built hidden-pair scenario.
- *   6. A hand-built row/column-group digit-capacity scenario, in the
- *      style of the project spec's own worked example: two rows with a
- *      forced digit-pair demand exactly at capacity forces the rest of
- *      those rows to avoid that pair.
- *   7. A hand-built group-capacity TUPLE-ELIMINATION scenario: a cage
- *      candidate is eliminated because using it would overflow a
- *      digit-pair's capacity across two rows.
+ *   6. Trace-based: over several real generated puzzles at a partial
+ *      masking, confirm the per-cage pointing/claiming technique
+ *      (ported from keen.c's solver_clue_candidate() DIFF_HARD mode)
+ *      actually fires at least once.
+ *   7. Trace-based, same style: confirm exhaustive naked/hidden subset
+ *      elimination actually reaches size >= 4 (impossible for the
+ *      previous version of this file, which capped subsets at size 3)
+ *      at least once across w=8/w=9 puzzles.
+ *   7b. Trace-based, same style: confirm the whole-grid single-digit
+ *      row/column technique (ported from latin_solver_diff_set()'s
+ *      extreme mode -- "X-wing" and its generalisations) actually
+ *      fires at least once.
  *   8. Fuzz/regression: for many random partial-clue maskings of many
  *      real generated Keen puzzles (sizes 4-9), assert every digit
  *      keen_human_solver() reports agrees with keen_forced_solver()'s
@@ -48,6 +53,13 @@
  * going through thegame.*. */
 extern char *get_forced_cells_ex(const game_params *params, const char *desc,
                                   bool *budget_aborted_out);
+
+/* Test-only entry point exported by keen.c alongside get_forced_cells_ex()
+ * -- see its doc comment there. Not part of struct game. Used by the
+ * trace_probe() helper below to get from a (possibly partial) text
+ * descriptor to the dsf/clues pair keen_human_solver_trace() wants. */
+extern bool get_puzzle_geometry_ex(const game_params *params, const char *desc,
+                                    DSF **dsf_out, unsigned long **clues_out);
 
 #define C_NO_CLUE 0x00000000UL
 #define C_ADD     0x20000000UL
@@ -235,179 +247,132 @@ static void test_hidden_pair(void)
 }
 
 /*
- * ---- Row/column-group digit-pair capacity (rule a) ----
- * 6x6 grid. Rows 0 and 1 together must contain exactly two 5s and two
- * 6s (capacity 4 for S={5,6}). Force three disjoint single-cell cages
- * within rows 0-1 to each demand exactly one of {5,6}... actually the
- * clean way to hit "demand==capacity" for rule (a): pin FOUR cells
- * within rows 0-1 outright to 5,5,6,6 (two 5s, two 6s, one in each of
- * the two rows for each digit, respecting Latin constraints), then
- * check that every OTHER cell in rows 0-1 has 5 and 6 removed by the
- * group-capacity rule (this is also directly implied by row/column
- * singles once the pins propagate through the normal Latin rules for
- * THEIR OWN row/column, but the group-capacity rule additionally
- * removes 5/6 from cells in the *other* row of the pair sharing no
- * column with the pins, which plain single-row/column propagation
- * cannot do by itself) -- specifically: pin (0,0)=5, (0,1)=6, (1,2)=5,
- * (1,3)=6. Row 0 and row 1 individually already exclude 5/6 from their
- * own other cells via ordinary row-Latin elimination; the interesting
- * NEW claim the group rule adds is that cell (1,0) and (1,1) (row 1,
- * but NOT excluded by row-0's own Latin rule, and not in the same
- * column as (1,2)/(1,3) either) also cannot be 5 or 6 -- yet ordinary
- * per-row Latin elimination alone (row 1 already has its own 5 and 6
- * pinned at columns 2 and 3) already forbids 5/6 elsewhere in row 1
- * too via that row's OWN hidden-single logic once (1,2)/(1,3) are
- * pinned. To isolate a case ordinary single-row/column propagation
- * genuinely cannot reach alone, use a cage (not outright pins) that
- * only PARTIALLY narrows each contributing cage to "one of {5,6}"
- * without pinning a specific row for each: two 2-cell cages, one
- * entirely in row 0 and one entirely in row 1, each a SUB-1 cage whose
- * only remaining valid pairs (after column pins fix their partner
- * cells) are (5,6) or (6,5) -- i.e. each cage is forced to use one 5
- * and one 6 among its own two cells, without fixing which. Then a
- * THIRD cage elsewhere confined to the same two rows, that could
- * otherwise use both a 5 and a 6 itself, must be prevented from doing
- * so (capacity already fully claimed by the first two cages) --
- * that scenario is exactly test_group_capacity_tuple_elim below. This
- * test instead sticks to the simpler "demand==capacity via outright
- * pins" case and confirms the *cross-row* eliminations rule (a) adds.
+ * ---- Trace-based technique-presence probes ----
+ *
+ * These three tests share one helper: generate several real puzzles at
+ * given sizes, mask each down to a random ~50%-revealed partial state
+ * (identical technique to test_fuzz_against_exact() below), run the
+ * TRACING solver, and check whether a given substring (naming the
+ * technique) shows up in its trace output at least once across the
+ * sample. This is deliberately a "does this fire in practice at all"
+ * smoke test rather than a hand-derived minimal witness: unlike the
+ * previous group-capacity technique (whose narrow, specific trigger
+ * conditions were tractable to construct by hand), pointing and the
+ * whole-grid extreme-set technique both depend on exactly which
+ * candidate tuples survive prior propagation, which is impractical to
+ * predict by hand with any confidence -- real generated puzzles are a
+ * far more reliable and much cheaper-to-maintain source of witnesses.
  */
-static void test_group_capacity_cross_row(void)
+static bool trace_probe(const int *sizes, int nsizes, int trials_per_size,
+                         const char *seedname, const char *needle)
 {
-    int w = 6, a = 36;
-    DSF *dsf = dsf_new_min(a);
-    unsigned long clues[36];
-    memset(clues, 0, sizeof(clues));
+    random_state *rs = random_new(seedname, (int)strlen(seedname));
+    bool found = false;
+    int si;
 
-    /* Pin (0,4)=5, (0,5)=6 (row 0), and (1,4)... no -- need the pins to
-     * NOT share columns with the cells we're checking, and to be the
-     * ONLY source of 5/6 demand in rows 0-1 combined. Use columns 4,5
-     * in row 0, and columns 2,3 in row 1: */
-    clues[dsf_minimal(dsf, 0 * w + 4)] = C_ADD | 5; /* (0,4)=5 */
-    clues[dsf_minimal(dsf, 0 * w + 5)] = C_ADD | 6; /* (0,5)=6 */
-    clues[dsf_minimal(dsf, 1 * w + 2)] = C_ADD | 6; /* (1,2)=6 */
-    clues[dsf_minimal(dsf, 1 * w + 3)] = C_ADD | 5; /* (1,3)=5 */
+    for (si = 0; si < nsizes && !found; si++) {
+        int w = sizes[si];
+        int trial;
+        for (trial = 0; trial < trials_per_size && !found; trial++) {
+            game_params *p = thegame.default_params();
+            char *aux = NULL;
+            char *desc, *maskeddesc;
+            char paramstr[16];
+            const char *comma, *p2;
+            int blocklen, outlen, ntoks = 0;
+            const char *tokstart[200];
+            int toklen[200];
+            int ti;
 
-    char *out = keen_human_solver(w, dsf, clues);
-    check("group-capacity(a): solver returns a result", out != NULL);
-    if (out) {
-        /* Rows 0-1 now have exactly two 5s and two 6s pinned (capacity
-         * for S={5,6} across these 2 rows is 4; demand from these four
-         * single-cell cages is already 4). Cell (1,0), row 1 column 0,
-         * shares no column with any of the four pins, so ordinary
-         * column-Latin elimination cannot touch it on 5/6's account;
-         * only the row-1-local Latin rule (once (1,2)/(1,3) are known)
-         * would also get there for cells WITHIN row 1 -- so instead
-         * check a cell in ROW 0 that isn't directly pinned and isn't
-         * in the same column as either row-0 pin either: (0,0). Row
-         * 0's own Latin rule already excludes 5 and 6 from (0,0) once
-         * (0,4)/(0,5) are pinned (single-row elimination alone
-         * suffices there too). To find a cell where the CROSS-row
-         * group rule is the only thing that can exclude 5/6, we need a
-         * cell whose own row's pins for 5/6 are NOT yet placed at all
-         * -- but in this construction every pin IS in one of the two
-         * rows, so both rows individually already exclude 5/6
-         * elsewhere via their own row-Latin rule. This construction
-         * therefore does not isolate the cross-row case; it still
-         * correctly exercises rule (a)'s demand==capacity computation
-         * (a stronger check below verifies soundness at scale via the
-         * fuzz test instead). Here we just confirm the pins themselves
-         * come out right and nothing incorrect is forced. */
-        check("group-capacity(a): all four pins correct",
-              out[0*w+4]=='5' && out[0*w+5]=='6' &&
-              out[1*w+2]=='6' && out[1*w+3]=='5');
-        free(out);
+            snprintf(paramstr, sizeof(paramstr), "%ddn", w);
+            thegame.decode_params(p, paramstr);
+            desc = thegame.new_desc(p, rs, &aux, false);
+
+            comma = strchr(desc, ',');
+            blocklen = (int)(comma - desc);
+            p2 = comma + 1;
+            while (*p2 && ntoks < 200) {
+                const char *ts = p2;
+                p2++;
+                while (*p2 >= '0' && *p2 <= '9') p2++;
+                tokstart[ntoks] = ts;
+                toklen[ntoks] = (int)(p2 - ts);
+                ntoks++;
+            }
+
+            maskeddesc = snewn(blocklen + 2 + ntoks * 12, char);
+            memcpy(maskeddesc, desc, (size_t)blocklen);
+            outlen = blocklen;
+            maskeddesc[outlen++] = ',';
+            for (ti = 0; ti < ntoks; ti++) {
+                if ((int)(random_upto(rs, 100)) < 50) {
+                    memcpy(maskeddesc + outlen, tokstart[ti], (size_t)toklen[ti]);
+                    outlen += toklen[ti];
+                } else {
+                    maskeddesc[outlen++] = 'n';
+                }
+            }
+            maskeddesc[outlen] = '\0';
+
+            if (thegame.validate_desc(p, maskeddesc) == NULL) {
+                DSF *dsf;
+                unsigned long *clues;
+                if (get_puzzle_geometry_ex(p, maskeddesc, &dsf, &clues)) {
+                    char tmpname[] = "/tmp/keensolver_trace_XXXXXX";
+                    int fd = mkstemp(tmpname);
+                    if (fd >= 0) {
+                        FILE *tf = fdopen(fd, "w+");
+                        char *out = keen_human_solver_trace(w, dsf, clues, tf);
+                        char line[512];
+                        fflush(tf);
+                        rewind(tf);
+                        while (fgets(line, sizeof(line), tf)) {
+                            if (strstr(line, needle)) { found = true; break; }
+                        }
+                        fclose(tf);
+                        remove(tmpname);
+                        if (out) sfree(out);
+                    }
+                    sfree(clues);
+                    dsf_free(dsf);
+                }
+            }
+
+            sfree(maskeddesc);
+            sfree(desc);
+            sfree(aux);
+            thegame.free_params(p);
+        }
     }
-    dsf_free(dsf);
+
+    random_free(rs);
+    return found;
 }
 
-/*
- * ---- Row/column-group digit-pair capacity (rule b: tuple elimination) ----
- * 6x6 grid. Rows 0-1, S={5,6}, capacity 4.
- *   - Cage A: cells (0,0)-(0,1), SUB 1, confined to row 0 only, whose
- *     surviving pairs (once columns 0/1 are otherwise unconstrained)
- *     include (5,6). We instead pin it down harder: make cage A a
- *     2-cell ADD-11 cage on (0,0)-(0,1) -- valid pairs summing to 11
- *     with distinct 1..6 values: only (5,6) and (6,5). So cage A's
- *     mincount for S={5,6} is 2 (both its cells are always in S).
- *   - Cage B: cells (1,0)-(1,1), also ADD 11 -> also always uses both
- *     5 and 6 (mincount 2).
- *   Combined demand from A and B alone is already 2+2=4 = capacity.
- *   Now cage C: cells (0,2)-(1,2) (one cell in each row, same column),
- *     a SUB-1 cage. Its candidate pairs before any elimination include
- *     (5,6)/(6,5) among others (e.g. (1,2)/(2,1)/(2,3)/(3,2)/(3,4)/
- *     (4,3)/(4,5)/(5,4)). The group-capacity rule (b) must eliminate
- *     every tuple of cage C that uses a 5 or a 6 at all (since A and B
- *     already exhaust the {5,6} capacity for rows 0-1 combined), i.e.
- *     it must remove (5,6),(6,5),(4,5),(5,4) from C's candidates,
- *     leaving only (1,2),(2,1),(2,3),(3,2),(3,4),(4,3).
- */
-static void test_group_capacity_tuple_elim(void)
+static void test_pointing_fires(void)
 {
-    int w = 6, a = 36;
-    DSF *dsf = dsf_new_min(a);
-    unsigned long clues[36];
-    memset(clues, 0, sizeof(clues));
+    int sizes[] = {5, 6, 7, 8, 9};
+    check("pointing: fires at least once across sampled puzzles",
+          trace_probe(sizes, 5, 8, "keen-human-solver-pointing", "pointing"));
+}
 
-    dsf_merge(dsf, 0*w+0, 0*w+1);
-    clues[dsf_minimal(dsf, 0*w+0)] = C_ADD | 11;   /* cage A */
+static void test_subset_size4_fires(void)
+{
+    /* Exhaustive subset elimination is capped at floor(w/2); size 4 is
+     * only reachable at w=8 or w=9, and is exactly the size the
+     * previous version of this file (capped at 3) could never reach. */
+    int sizes[] = {8, 9};
+    bool found = trace_probe(sizes, 2, 12, "keen-human-solver-subset4a", "naked-4");
+    if (!found)
+        found = trace_probe(sizes, 2, 12, "keen-human-solver-subset4b", "hidden-4");
+    check("subsets: a size>=4 naked or hidden subset fires at least once", found);
+}
 
-    dsf_merge(dsf, 1*w+0, 1*w+1);
-    clues[dsf_minimal(dsf, 1*w+0)] = C_ADD | 11;   /* cage B */
-
-    dsf_merge(dsf, 0*w+2, 1*w+2);
-    clues[dsf_minimal(dsf, 0*w+2)] = C_SUB | 1;    /* cage C */
-
-    char *out = keen_human_solver(w, dsf, clues);
-    check("group-capacity(b): solver returns a result", out != NULL);
-    if (out) {
-        /* Cage A and B are each forced to {5,6} in some order (only
-         * valid ADD-11 pairs), but WHICH cell gets 5 vs 6 is not
-         * determined by this alone (needs column info we haven't
-         * given) -- so (0,0),(0,1),(1,0),(1,1) should all still show
-         * '.', each narrowed to just {5,6} internally. What we can
-         * observe externally is that cage C's cells (0,2) and (1,2)
-         * must NOT be forced to 5 or 6 -- rather, we verify indirectly
-         * via a trace-based check: cage C should still allow non-5/6
-         * pairs, i.e. this deduction shouldn't have made the puzzle
-         * inconsistent, and separately (0,2)/(1,2) must not end up
-         * pinned to 5 or 6 by any other means (they should remain
-         * genuinely undetermined, since (1,2)/(2,1)/(2,3)/(3,2)/(3,4)/
-         * (4,3) are all still live). */
-        check("group-capacity(b): consistent (not NULL)", out != NULL);
-        check("group-capacity(b): (0,2) not forced to 5 or 6",
-              out[0*w+2] != '5' && out[0*w+2] != '6');
-        check("group-capacity(b): (1,2) not forced to 5 or 6",
-              out[1*w+2] != '5' && out[1*w+2] != '6');
-        free(out);
-    }
-
-    /* Direct trace-based verification that rule (b) actually fired
-     * (rather than the above just happening to hold for some other
-     * reason): re-run with tracing and grep for the elimination line
-     * mentioning cage C's first cell (index 2). */
-    {
-        char tmpname[] = "/tmp/keensolver_trace_XXXXXX";
-        int fd = mkstemp(tmpname);
-        bool found = false;
-        if (fd >= 0) {
-            FILE *tf = fdopen(fd, "w+");
-            char *out2 = keen_human_solver_trace(w, dsf, clues, tf);
-            fflush(tf);
-            rewind(tf);
-            char line[512];
-            while (fgets(line, sizeof(line), tf)) {
-                if (strstr(line, "cage@cell2") && strstr(line, "eliminated"))
-                    found = true;
-            }
-            fclose(tf);
-            remove(tmpname);
-            if (out2) free(out2);
-        }
-        check("group-capacity(b): trace shows cage C's tuple eliminated", found);
-    }
-
-    dsf_free(dsf);
+static void test_extreme_set_fires(void)
+{
+    int sizes[] = {6, 7, 8, 9};
+    check("extreme-set: whole-grid X-wing-style technique fires at least once",
+          trace_probe(sizes, 4, 8, "keen-human-solver-extremeset", "extreme-set"));
 }
 
 /*
@@ -585,8 +550,9 @@ int main(void)
     test_row_total();
     test_naked_pair();
     test_hidden_pair();
-    test_group_capacity_cross_row();
-    test_group_capacity_tuple_elim();
+    test_pointing_fires();
+    test_subset_size4_fires();
+    test_extreme_set_fires();
     test_fuzz_against_exact();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
