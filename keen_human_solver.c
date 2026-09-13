@@ -54,14 +54,39 @@
  *     removed from that cell -- equivalent to solver_clue_candidate()'s
  *     DIFF_NORMAL mode in keen.c, computed here from the cage's
  *     explicit tuple list instead of an inline recursive enumeration.
- *  2. Per-cage pointing/claiming (cage->row and cage->column
- *     restriction): for a cage and one row (or column) it touches, if
- *     some digit appears in that row's slice of the cage in EVERY
- *     surviving tuple, that digit must appear somewhere in the cage's
- *     part of the row -- so it can be eliminated from the rest of the
- *     row outside the cage. Direct port of solver_clue_candidate()'s
- *     DIFF_HARD mode (there expressed as a bitmap-AND over candidate
- *     layouts; here as a bitmask AND over cage->tuples[]).
+ *  2. Per-cage pointing (cage->row and cage->column restriction): for a
+ *     cage and one row (or column) it touches, if some digit appears in
+ *     that row's slice of the cage in EVERY surviving tuple, that digit
+ *     must appear somewhere in the cage's part of the row -- so it can
+ *     be eliminated from the rest of the row outside the cage. Direct
+ *     port of solver_clue_candidate()'s DIFF_HARD mode (there expressed
+ *     as a bitmap-AND over candidate layouts; here as a bitmask AND
+ *     over cage->tuples[]).
+ *  2b. Per-unit claiming (row/column->cage restriction, the REVERSE of
+ *     technique 2): for a unit (row or column) u and a cage C with one
+ *     or more cells in u, if some digit is possible somewhere in C's
+ *     cells-in-u but nowhere else in u, then C's cells-in-u must
+ *     collectively contain that digit no matter how C is completed --
+ *     so any surviving tuple of C that fails to place the digit at one
+ *     of those cells can be eliminated. This is genuinely NOT part of
+ *     solver_clue_candidate()/latin_solver_diff_set()/
+ *     latin_solver_forcing(): confirmed by running keen.c's own
+ *     solver() directly (not just this port) on hand-worked examples a
+ *     human solves this way, at every difficulty up to and including
+ *     DIFF_EXTREME (forcing chains included) -- solver() provably
+ *     cannot complete them without recursion (DIFF_UNREASONABLE, i.e.
+ *     guessing), even though the deduction needs only one cage plus
+ *     ordinary Latin row/column reasoning and no hypothetical at all.
+ *     So unlike every other numbered technique here, this one is not a
+ *     port of anything in keen.c/latin.c -- it is a new,
+ *     independently-verified-sound rule, added because solver()'s own
+ *     technique set has a real gap here that a human solver has no
+ *     reason to inherit (see the project's progress notes for the
+ *     worked examples and the direct-solver() test that established
+ *     this). Implemented by mutating cage->tuples[]/ntuples in place,
+ *     like enumerate_cage() -- see apply_cage_claiming()'s own comment
+ *     for why that is still safe under this file's no-stale-cache
+ *     discipline.
  *  3. Row/column naked and hidden SUBSETS, exhaustively, of every size
  *     from 1 up to floor(w/2) (checking beyond that adds nothing new,
  *     by duality: a naked subset of size m is the same fact as a
@@ -115,9 +140,11 @@
  * Soundness vs. completeness
  * -------------------------------------------------------------------
  *
- * Every individual rule above is a valid logical inference, so nothing
- * this file ever reports as forced can be wrong: it is always a SOUND
- * SUBSET of what keen_forced_solver() would report (verified for this
+ * Every individual rule above is a valid logical inference (including
+ * 2b, independently verified sound even though it is not a port), so
+ * nothing this file ever reports as forced can be wrong: it is always a
+ * SOUND SUBSET of what keen_forced_solver() would report (verified for
+ * this
  * codebase by a randomised regression test that runs both solvers over
  * many random partial-clue states of real generated puzzles and checks
  * that every digit this solver reports agrees with the exact solver --
@@ -717,7 +744,7 @@ static bool revise_unit_subsets(Solver *s, const int *cells, int n, bool *change
 }
 
 /* ------------------------------------------------------------------
- * Per-cage pointing/claiming (technique 2 in the file header). Port of
+ * Per-cage pointing (technique 2 in the file header). Port of
  * solver_clue_candidate()'s DIFF_HARD mode in keen.c: there, this is
  * computed by ANDing a bitmap across every candidate layout found
  * during an inline recursive enumeration; here, the same AND is taken
@@ -776,6 +803,106 @@ static bool apply_cage_pointing(Solver *s, Cage *cage, bool *changed)
                             if (!remove_from_domain(s, cell, must, changed))
                                 return false;
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+/* ------------------------------------------------------------------
+ * Per-unit claiming (technique 2b in the file header): the reverse
+ * direction of pointing. For a unit u (row or column) and a cage with
+ * one or more cells in u, take the union of domains of the cage's
+ * cells IN u ("cage_mask") and the union of domains of every other
+ * cell in u ("other_mask"). Any digit in cage_mask but not in
+ * other_mask cannot go anywhere in unit u except inside this cage's
+ * cells-in-u -- so every surviving tuple that fails to place that
+ * digit at one of those cells is impossible and can be dropped.
+ *
+ * NOT a port -- see the file header's technique 2b entry for why this
+ * genuinely goes beyond solver()/latin.c's own technique set (verified
+ * by testing keen.c's actual solver() directly), not just this port of
+ * it.
+ *
+ * Unlike apply_cage_pointing (which only ever removes from domain[]),
+ * this mutates cage->tuples[]/ntuples in place, the same way
+ * enumerate_cage() does. That is safe here for the same reason it is
+ * safe there: nothing in this file caches any derived fact about a
+ * cage's tuple list except what apply_cage_support() and
+ * apply_cage_pointing() recompute FRESH from tuples[] every single
+ * round (see converge_solver()'s comment on why the previous,
+ * group-capacity-based version of this file could go stale in place
+ * and this one cannot) -- so narrowing tuples[] here is picked up
+ * correctly by both of those the next time they run, with nothing left
+ * behind to go stale. A cage whose tuples shrink to zero here is a
+ * genuine contradiction (no assignment of the cage's own cells can be
+ * reconciled with a unit it touches), handled exactly like
+ * enumerate_cage() finding zero tuples.
+ * ------------------------------------------------------------------ */
+
+static bool apply_cage_claiming(Solver *s, Cage *cage, bool *changed)
+{
+    int dim;
+
+    if (!cage->tuples_valid || cage->ntuples == 0) return true;
+
+    for (dim = 0; dim < 2; dim++) {
+        unsigned int unitset = (dim == 0) ? cage->rowmask : cage->colmask;
+        int u;
+        for (u = 0; u < s->w; u++) {
+            if (!(unitset & (1u << u))) continue;
+
+            {
+                unsigned short cage_mask = 0, other_mask = 0, confined;
+                int i, pos;
+
+                for (i = 0; i < cage->n; i++) {
+                    int cell = cage->cells[i];
+                    int cu = (dim == 0) ? cell_row(s, cell) : cell_col(s, cell);
+                    if (cu == u) cage_mask |= s->domain[cell];
+                }
+                for (pos = 0; pos < s->w; pos++) {
+                    int cell = (dim == 0) ? (u * s->w + pos) : (pos * s->w + u);
+                    bool incage = false;
+                    for (i = 0; i < cage->n; i++)
+                        if (cage->cells[i] == cell) { incage = true; break; }
+                    if (incage) continue;
+                    other_mask |= s->domain[cell];
+                }
+
+                confined = (unsigned short)(cage_mask & ~other_mask);
+                if (!confined) continue;
+
+                {
+                    int t, keep = 0;
+                    for (t = 0; t < cage->ntuples; t++) {
+                        unsigned short here = 0;
+                        for (i = 0; i < cage->n; i++) {
+                            int cell = cage->cells[i];
+                            int cu = (dim == 0) ? cell_row(s, cell) : cell_col(s, cell);
+                            if (cu == u)
+                                here |= (unsigned short)(1u << cage->tuples[t][i]);
+                        }
+                        if ((here & confined) == confined) {
+                            if (keep != t)
+                                memcpy(cage->tuples[keep], cage->tuples[t],
+                                       (size_t)cage->n);
+                            keep++;
+                        }
+                    }
+                    if (keep < cage->ntuples) {
+                        if (s->trace)
+                            fprintf(s->trace,
+                                    "  claiming dim=%d unit=%d cage@cell%d: "
+                                    "confined=%04x -> tuples %d -> %d\n",
+                                    dim, u, cage->cells[0], (unsigned)confined,
+                                    cage->ntuples, keep);
+                        cage->ntuples = keep;
+                        *changed = true;
+                        if (cage->ntuples == 0) return false; /* contradiction */
                     }
                 }
             }
@@ -925,6 +1052,9 @@ static bool run_one_pass(Solver *s, bool *changed)
     for (i = 0; i < s->ncages; i++)
         if (!apply_cage_pointing(s, &s->cages[i], changed))
             return false;
+    for (i = 0; i < s->ncages; i++)
+        if (!apply_cage_claiming(s, &s->cages[i], changed))
+            return false;
 
     for (i = 0; i < s->w; i++) {
         if (!s->row_dirty[i]) continue;
@@ -963,16 +1093,26 @@ static bool run_one_pass(Solver *s, bool *changed)
  * for s->trace's pass numbering.
  *
  * Dirty-gating (Cage.dirty/row_dirty/col_dirty/grid_dirty) is a pure
- * performance mechanism: every technique either reads a cage's tuples
- * fresh from enumerate_cage() every time it runs (apply_cage_support,
- * apply_cage_pointing), or reads domain[] directly with no cached
- * intermediate state of its own (revise_unit_subsets,
- * apply_extreme_digit_sets) -- unlike the previous (group-capacity
- * -based) version of this file, nothing here mutates a cage's tuple
- * list in place outside enumerate_cage() itself, which is exactly what
- * used to let a dirty flag go stale relative to derived state computed
- * from it. So there is no known way left for this dirty-gating to skip
- * a computation whose result could actually have changed.
+ * performance mechanism. Only enumerate_cage() (rebuild a cage's tuples
+ * from its cells' current domains) is gated by Cage.dirty; the three
+ * consumers of cage->tuples[] -- apply_cage_support, apply_cage_pointing,
+ * and apply_cage_claiming (which, like enumerate_cage(), mutates
+ * tuples[]/ntuples in place rather than only reading them) -- all run
+ * unconditionally every round regardless of any dirty flag, so a tuple
+ * list narrowed by apply_cage_claiming() is always picked up by the
+ * other two on their very next call, with no cached fact anywhere that
+ * could go stale relative to it; only enumerate_cage()'s own rebuild
+ * needs to skip cages it has no new domain information for, which
+ * Cage.dirty already ensures happens only when nothing could change.
+ * revise_unit_subsets/apply_extreme_digit_sets read domain[] directly
+ * with no cached intermediate state of their own. Unlike the previous
+ * (group-capacity-based) version of this file, no rule anywhere caches
+ * a derived fact about a cage (such as the old mincount[]/mincount_pair[])
+ * that could go stale after another rule mutates tuples[] out from under
+ * it -- which is exactly the bug class that made this file's predecessor
+ * lossy (see part 12's progress notes). So there is no known way left
+ * for this dirty-gating to skip a computation whose result could
+ * actually have changed.
  */
 static bool converge_solver(Solver *s, int *rounds)
 {

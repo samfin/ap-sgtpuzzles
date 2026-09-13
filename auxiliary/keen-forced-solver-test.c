@@ -70,7 +70,8 @@ static void check(const char *name, bool cond)
 static void test_generated_puzzle(void)
 {
     game_params *p = thegame.default_params();
-    random_state *rs = random_new("keen-forced-solver-test", 24);
+    random_state *rs = random_new("keen-forced-solver-test",
+                                   (int)strlen("keen-forced-solver-test"));
     char *aux = NULL;
     char *desc;
     int w = 6, a = w * w, i;

@@ -1,3 +1,15 @@
+/* Needed before any system header for mkstemp()/fdopen() (used by
+ * trace_probe() below) to actually be declared under -std=c11 -- without
+ * this, both are silently implicitly declared as returning plain int,
+ * which truncates fdopen()'s real FILE* return value to 32 bits and
+ * hands trace_probe() a garbage pointer that only crashes nondeterministically
+ * (its low bits happen to look like a small/invalid address on some
+ * allocators and a coincidentally-harmless one on others -- this is
+ * exactly what made the bug so confusing to pin down: it reproduced
+ * under -fsanitize=address but not under plain gcc or valgrind, purely
+ * because of how each one's allocator happens to lay out the heap). */
+#define _POSIX_C_SOURCE 200809L
+
 /*
  * keen-human-solver-test.c: test suite for keen_human_solver().
  *
@@ -385,7 +397,8 @@ static void test_fuzz_against_exact(void)
     int si;
     int total_masks = 0, sound_masks = 0, subset_masks = 0;
     int fully_solved_by_human = 0, fully_specified_count = 0;
-    random_state *rs = random_new("keen-human-solver-fuzz", 25);
+    random_state *rs = random_new("keen-human-solver-fuzz",
+                                   (int)strlen("keen-human-solver-fuzz"));
 
     for (si = 0; si < (int)(sizeof(sizes)/sizeof(sizes[0])); si++) {
         int w = sizes[si], a = w * w;

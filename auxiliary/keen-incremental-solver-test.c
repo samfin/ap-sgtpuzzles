@@ -108,7 +108,8 @@ static void test_incremental_matches_oneshot(void)
 {
     int sizes[] = {4, 5, 6, 7, 8, 9};
     int si;
-    random_state *rs = random_new("keen-incremental-test", 21);
+    random_state *rs = random_new("keen-incremental-test",
+                                   (int)strlen("keen-incremental-test"));
     int total_reveals = 0;
     int total_puzzles = 0, total_orderings = 0;
     int loose_mismatches = 0;
@@ -296,7 +297,8 @@ static void test_incremental_matches_oneshot(void)
 static void test_idempotent_reveal(void)
 {
     int w = 6, a = 36;
-    random_state *rs = random_new("keen-incremental-idempotent", 7);
+    random_state *rs = random_new("keen-incremental-idempotent",
+                                   (int)strlen("keen-incremental-idempotent"));
     game_params *p = thegame.default_params();
     char *aux = NULL;
     char paramstr[16];
@@ -352,7 +354,8 @@ static void test_idempotent_reveal(void)
 static void test_performance(void)
 {
     int w = 9, a = 81;
-    random_state *rs = random_new("keen-incremental-perf", 99);
+    random_state *rs = random_new("keen-incremental-perf",
+                                   (int)strlen("keen-incremental-perf"));
     int trial, ntrials = 8;
     double total_inc = 0.0, total_oneshot = 0.0;
 
