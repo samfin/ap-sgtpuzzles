@@ -715,6 +715,7 @@ static void test_fuzz_against_exact(void)
           fully_solved_by_human * 100 >= fully_specified_count * 50);
     printf("  fully-clued puzzles solved completely by human techniques: %d/%d\n",
            fully_solved_by_human, fully_specified_count);
+    random_free(rs);
 }
 
 int main(void)

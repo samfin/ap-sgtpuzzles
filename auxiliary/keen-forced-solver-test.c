@@ -151,6 +151,7 @@ static void test_generated_puzzle(void)
     sfree(desc);
     sfree(aux);
     thegame.free_params(p);
+    random_free(rs);
 }
 
 /* ---- Test 3: the project's own "row total" deduction example ---- */

@@ -25,6 +25,21 @@
  *      keen_human_solver() fresh from scratch after each new cage is
  *      revealed" (what a from-scratch clue-grouping planner currently
  *      does), and reports the speedup.
+ *   5. Save/restore checkpoints: for many real generated puzzles,
+ *      capture a checkpoint after every single reveal along a random
+ *      order, then restore a handful of them out of order (each
+ *      possibly more than once) and confirm each restore reproduces
+ *      the EXACT snapshot captured at that point -- not just a
+ *      non-contradicting one, since the whole point of a checkpoint is
+ *      exact reproduction. Also confirms a session stays fully usable
+ *      after a restore: finishing the remaining reveals (in a fresh
+ *      random order) from a restored checkpoint must never contradict
+ *      a totally fresh one-shot solve of the puzzle's complete clue
+ *      set.
+ *   6. Save/restore on a freshly-created (nothing revealed) solver:
+ *      restoring that checkpoint after further reveals reproduces the
+ *      blank/full-domain snapshot, and a checkpoint survives being
+ *      restored more than once.
  *
  * Run with no arguments; prints PASS/FAIL per check and a summary.
  */
@@ -288,6 +303,7 @@ static void test_incremental_matches_oneshot(void)
      * should stay rare -- flag it as a real regression if it's not. */
     check("loose mismatch rate stays low (<1% of reveals)",
           total_reveals == 0 || loose_mismatches * 100 < total_reveals);
+    random_free(rs);
 }
 
 /*
@@ -342,6 +358,7 @@ static void test_idempotent_reveal(void)
     thegame.free_params(p);
     sfree(desc);
     if (aux) sfree(aux);
+    random_free(rs);
 }
 
 /*
@@ -427,6 +444,260 @@ static void test_performance(void)
 
     check("incremental walk is not slower than from-scratch walk",
           total_inc <= total_oneshot);
+    random_free(rs);
+}
+
+/*
+ * Save/restore checkpoints: reveal every cage of many real generated
+ * puzzles in a random order, capturing a checkpoint (and remembering
+ * the exact snapshot at that point) after every single reveal.
+ * Afterwards, restore a handful of checkpoints out of order -- each
+ * possibly more than once -- and confirm each restore reproduces its
+ * captured snapshot byte-for-byte: unlike the fuzz test above, exact
+ * equality (not just non-contradiction) is the right bar here, since
+ * the whole point of a checkpoint is to reproduce a state exactly, not
+ * merely soundly. Separately confirms restoring doesn't leave the
+ * session unusable: finishing whatever cages remain (in a FRESH random
+ * order) from a restored checkpoint must never contradict a totally
+ * fresh one-shot solve of the puzzle's complete, already-known
+ * -consistent clue set.
+ */
+static void test_save_restore_state(void)
+{
+    int sizes[] = {5, 6, 7, 8, 9};
+    int si;
+    random_state *rs = random_new("keen-incremental-saverestore",
+                                   (int)strlen("keen-incremental-saverestore"));
+    bool all_exact = true, all_usable = true;
+    int total_checkpoints = 0;
+
+    for (si = 0; si < (int)(sizeof(sizes) / sizeof(sizes[0])); si++) {
+        int w = sizes[si], a = w * w;
+        int puzzle_i;
+        for (puzzle_i = 0; puzzle_i < 3; puzzle_i++) {
+            game_params *p = thegame.default_params();
+            char *aux = NULL;
+            char paramstr[16];
+            char *desc;
+            DSF *dsf;
+            unsigned long *clues;
+            int root_cell[200], op[200];
+            long value[200];
+            int ncages, k;
+            int *order;
+            KeenHumanIncSolverState **checkpoints;
+            char **snap_at;
+            KeenHumanIncSolver *inc;
+
+            snprintf(paramstr, sizeof(paramstr), "%ddn", w);
+            thegame.decode_params(p, paramstr);
+            desc = thegame.new_desc(p, rs, &aux, false);
+            get_puzzle_geometry_ex(p, desc, &dsf, &clues);
+            ncages = extract_real_cages(w, dsf, clues, root_cell, op, value);
+
+            order = snewn(ncages, int);
+            random_permutation(rs, order, ncages);
+            checkpoints = snewn(ncages, KeenHumanIncSolverState *);
+            snap_at = snewn(ncages, char *);
+
+            inc = keen_human_solver_create(w, dsf);
+
+            for (k = 0; k < ncages; k++) {
+                bool ok = keen_human_solver_reveal(inc, order[k], op[order[k]],
+                                                    value[order[k]]);
+                check("save/restore setup: reveal succeeds "
+                      "(real puzzle's own clues, should never contradict)", ok);
+                if (!ok) { checkpoints[k] = NULL; snap_at[k] = NULL; continue; }
+
+                checkpoints[k] = keen_human_solver_save_state(inc);
+                check("save/restore: save_state succeeds", checkpoints[k] != NULL);
+                snap_at[k] = keen_human_solver_snapshot(inc);
+                total_checkpoints++;
+            }
+
+            /* Restore a handful of checkpoints out of order, each possibly
+             * more than once, and confirm exact reproduction. */
+            {
+                int trial;
+                for (trial = 0; trial < ncages; trial++) {
+                    int idx = (int)random_upto(rs, (unsigned long)ncages);
+                    char *snap;
+                    if (!checkpoints[idx]) continue;
+                    keen_human_solver_restore_state(inc, checkpoints[idx]);
+                    snap = keen_human_solver_snapshot(inc);
+                    if (strcmp(snap, snap_at[idx]) != 0) {
+                        all_exact = false;
+                        printf("FAIL: restored checkpoint %d != its captured "
+                               "snapshot\n  restored=%s\n  original=%s\n",
+                               idx, snap, snap_at[idx]);
+                    }
+                    free(snap);
+                }
+            }
+
+            /* Restore to a random checkpoint, then finish revealing every
+             * remaining cage in a FRESH random order -- the fully-revealed
+             * result must never contradict a fresh one-shot solve of the
+             * complete clue set. */
+            {
+                int restore_at = (int)random_upto(rs, (unsigned long)ncages);
+                bool already_revealed[200];
+                int *pool = snewn(ncages, int), npool = 0;
+                int *remaining_order;
+                char *final_snap, *full_oneshot;
+                unsigned long *full_clues = snewn(a, unsigned long);
+                bool usable = true, contradiction = false;
+                int m, c;
+
+                if (checkpoints[restore_at])
+                    keen_human_solver_restore_state(inc, checkpoints[restore_at]);
+
+                memset(already_revealed, 0, sizeof(already_revealed));
+                for (m = 0; m <= restore_at; m++) already_revealed[order[m]] = true;
+                for (m = 0; m < ncages; m++)
+                    if (!already_revealed[m]) pool[npool++] = m;
+
+                remaining_order = snewn(npool > 0 ? npool : 1, int);
+                random_permutation(rs, remaining_order, npool);
+                for (m = 0; m < npool; m++) remaining_order[m] = pool[remaining_order[m]];
+
+                for (k = 0; k < npool; k++) {
+                    int cage_idx = remaining_order[k];
+                    if (!keen_human_solver_reveal(inc, cage_idx, op[cage_idx],
+                                                   value[cage_idx])) {
+                        usable = false;
+                        break;
+                    }
+                }
+
+                final_snap = keen_human_solver_snapshot(inc);
+
+                for (c = 0; c < a; c++) full_clues[c] = 0;
+                for (c = 0; c < ncages; c++)
+                    full_clues[root_cell[c]] =
+                        (unsigned long)(unsigned int)op[c] | (unsigned long)value[c];
+                full_oneshot = keen_human_solver(w, dsf, full_clues);
+
+                if (full_oneshot) {
+                    for (c = 0; c < a; c++)
+                        if (final_snap[c] != '.' && full_oneshot[c] != '.' &&
+                            final_snap[c] != full_oneshot[c])
+                            contradiction = true;
+                }
+                if (!usable || !full_oneshot || contradiction) {
+                    all_usable = false;
+                    printf("FAIL: session unusable/contradictory after "
+                           "restore+continue (w=%d restore_at=%d)\n",
+                           w, restore_at);
+                }
+
+                if (full_oneshot) free(full_oneshot);
+                free(final_snap);
+                sfree(full_clues);
+                sfree(pool);
+                sfree(remaining_order);
+            }
+
+            for (k = 0; k < ncages; k++) {
+                if (checkpoints[k]) keen_human_solver_state_free(checkpoints[k]);
+                if (snap_at[k]) free(snap_at[k]);
+            }
+            sfree(checkpoints);
+            sfree(snap_at);
+            sfree(order);
+            keen_human_solver_destroy(inc);
+            dsf_free(dsf);
+            sfree(clues);
+            thegame.free_params(p);
+            sfree(desc);
+            if (aux) sfree(aux);
+        }
+    }
+
+    printf("  save/restore: %d checkpoints captured and exactness-checked\n",
+           total_checkpoints);
+    check("restoring a checkpoint always reproduces its exact original snapshot",
+          all_exact);
+    check("a session remains fully usable (matches a fresh full solve) "
+          "after restore+continue", all_usable);
+    random_free(rs);
+}
+
+/*
+ * Save/restore on a freshly-created (nothing revealed yet) solver, and
+ * confirms a single checkpoint tolerates being restored more than once
+ * (it's a snapshot, not a consumed stack frame -- see
+ * keen_human_solver.h's doc comment).
+ */
+static void test_save_restore_initial_state(void)
+{
+    int w = 6;
+    random_state *rs = random_new("keen-incremental-saverestore-initial",
+                                   (int)strlen("keen-incremental-saverestore-initial"));
+    game_params *p = thegame.default_params();
+    char *aux = NULL;
+    char paramstr[16];
+    char *desc;
+    DSF *dsf;
+    unsigned long *clues;
+    int root_cell[200], op[200];
+    long value[200];
+    int ncages, k;
+    KeenHumanIncSolver *inc;
+    KeenHumanIncSolverState *initial;
+    char *blank_snap, *after_reveals_snap, *restored_snap, *restored_again;
+
+    snprintf(paramstr, sizeof(paramstr), "%ddn", w);
+    thegame.decode_params(p, paramstr);
+    desc = thegame.new_desc(p, rs, &aux, false);
+    get_puzzle_geometry_ex(p, desc, &dsf, &clues);
+    ncages = extract_real_cages(w, dsf, clues, root_cell, op, value);
+
+    inc = keen_human_solver_create(w, dsf);
+    blank_snap = keen_human_solver_snapshot(inc);
+    initial = keen_human_solver_save_state(inc);
+    check("save/restore initial: save_state succeeds on a freshly-created solver",
+          initial != NULL);
+
+    /* Reveal EVERY cage (this puzzle's own true, already-consistent
+     * clue set) rather than an arbitrary fixed prefix -- part 11's own
+     * fuzz testing found real generated puzzles are essentially always
+     * fully solvable by human techniques once fully clued, so this is
+     * the reliable way to guarantee the "changed something" sanity
+     * check below isn't vacuous, regardless of which handful of cages
+     * a smaller, seed-dependent prefix happens to land on. */
+    for (k = 0; k < ncages; k++)
+        keen_human_solver_reveal(inc, k, op[k], value[k]);
+    after_reveals_snap = keen_human_solver_snapshot(inc);
+    check("save/restore initial: reveals actually changed something "
+          "(test isn't vacuous)",
+          ncages == 0 || strcmp(after_reveals_snap, blank_snap) != 0);
+
+    keen_human_solver_restore_state(inc, initial);
+    restored_snap = keen_human_solver_snapshot(inc);
+    check("save/restore initial: restoring reproduces the blank snapshot",
+          strcmp(restored_snap, blank_snap) == 0);
+
+    /* Restoring must not consume/invalidate the checkpoint. */
+    keen_human_solver_restore_state(inc, initial);
+    restored_again = keen_human_solver_snapshot(inc);
+    check("save/restore initial: a checkpoint can be restored more than once",
+          strcmp(restored_again, blank_snap) == 0);
+
+    keen_human_solver_state_free(initial);
+    keen_human_solver_state_free(NULL); /* must be a safe no-op */
+
+    free(blank_snap);
+    free(after_reveals_snap);
+    free(restored_snap);
+    free(restored_again);
+    keen_human_solver_destroy(inc);
+    dsf_free(dsf);
+    sfree(clues);
+    thegame.free_params(p);
+    sfree(desc);
+    if (aux) sfree(aux);
+    random_free(rs);
 }
 
 int main(void)
@@ -434,6 +705,8 @@ int main(void)
     test_incremental_matches_oneshot();
     test_idempotent_reveal();
     test_performance();
+    test_save_restore_state();
+    test_save_restore_initial_state();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

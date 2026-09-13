@@ -130,6 +130,9 @@ void *inc_solver_create(const char *params_str, const char *desc_str);
 char *inc_solver_reveal_and_snapshot(void *inc, int cage_index, int op,
                                       int value);
 void inc_solver_destroy(void *inc);
+void *inc_solver_save_state(void *inc);
+void inc_solver_restore_state(void *inc, void *state);
+void inc_solver_free_state(void *state);
 void dlg_return_sval(int index, const char *val);
 void dlg_return_ival(int index, int val);
 void resize_puzzle(int w, int h);
@@ -974,6 +977,35 @@ void inc_solver_destroy(void *inc)
 {
     if (thegame.incremental_solver_destroy && inc)
         thegame.incremental_solver_destroy(inc);
+}
+
+/*
+ * Save/restore checkpoints on top of the bridge above -- see struct
+ * game's incremental_solver_save_state/restore_state/free_state fields
+ * in puzzles.h for the calling convention. Same "opaque void* handle
+ * smuggled across the WASM boundary" contract as inc above; a games
+ * that implements the incremental_solver_* quartet but not this trio
+ * leaves all three fields NULL, mirrored here as returning NULL/being a
+ * no-op exactly like the quartet's own no-implementation case.
+ */
+void *inc_solver_save_state(void *inc)
+{
+    if (!thegame.incremental_solver_save_state || !inc)
+        return NULL;
+
+    return thegame.incremental_solver_save_state(inc);
+}
+
+void inc_solver_restore_state(void *inc, void *state)
+{
+    if (thegame.incremental_solver_restore_state && inc && state)
+        thegame.incremental_solver_restore_state(inc, state);
+}
+
+void inc_solver_free_state(void *state)
+{
+    if (thegame.incremental_solver_free_state && state)
+        thegame.incremental_solver_free_state(state);
 }
 
 static bool savefile_read(void *vctx, void *buf, int len)

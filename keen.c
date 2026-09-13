@@ -1665,6 +1665,33 @@ static void keen_incremental_solver_destroy(void *inc)
 }
 
 /*
+ * struct game's incremental_solver_save_state/restore_state/free_state
+ * trio (see puzzles.h), implemented via keen_human_solver_create()'s
+ * checkpoint API -- see keen_human_solver.h's "Save/restore checkpoints"
+ * section. Trivial wrappers, same shape as the quartet above: the only
+ * reason these exist as separate functions at all (rather than callers
+ * reaching keen_human_solver_save_state() etc. directly) is that
+ * callers across the generic struct game field, which for Keen
+ * ultimately means JS via emcc-ap.c, only ever see the opaque `void *`
+ * handles those fields' signatures use.
+ */
+static void *keen_incremental_solver_save_state(void *inc)
+{
+    return keen_human_solver_save_state((KeenHumanIncSolver *)inc);
+}
+
+static void keen_incremental_solver_restore_state(void *inc, void *state)
+{
+    keen_human_solver_restore_state((KeenHumanIncSolver *)inc,
+                                     (const KeenHumanIncSolverState *)state);
+}
+
+static void keen_incremental_solver_free_state(void *state)
+{
+    keen_human_solver_state_free((KeenHumanIncSolverState *)state);
+}
+
+/*
  * Test/debug-only entry point (used by keen_human_solver_test.c's fuzz
  * regression against keen_forced_solver(), and available for anyone
  * else debugging this pair of solvers): identical to get_forced_cells()
@@ -2806,6 +2833,9 @@ const struct game thegame = {
     keen_incremental_solver_reveal,
     keen_incremental_solver_snapshot,
     keen_incremental_solver_destroy,
+    keen_incremental_solver_save_state,
+    keen_incremental_solver_restore_state,
+    keen_incremental_solver_free_state,
 };
 
 #ifdef STANDALONE_SOLVER

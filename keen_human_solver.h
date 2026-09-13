@@ -110,4 +110,56 @@ int keen_human_solver_cage_cell(KeenHumanIncSolver *inc, int cage_index, int k);
 
 void keen_human_solver_destroy(KeenHumanIncSolver *inc);
 
+/*
+ * -------------------------------------------------------------------
+ * Save/restore checkpoints
+ * -------------------------------------------------------------------
+ *
+ * For a caller that wants to speculatively try revealing one or more
+ * cages, look at the result, and then possibly discard that attempt
+ * and go back -- e.g. clue-grouping planning that tries adding a
+ * candidate cage to the current stage's batch, or that tries removing
+ * one cage from an already-built batch to see if it was actually
+ * necessary -- reveals alone can't do this: keen_human_solver_reveal()
+ * is one-directional by design (see its doc comment; nothing it
+ * concludes is ever retracted). Rather than discard the whole session
+ * and rebuild one from scratch by replaying every previously-committed
+ * reveal (correct, but redundant work every single time), a caller can
+ * capture a lightweight checkpoint of the CURRENT state, try whatever
+ * further reveals it wants, and then jump back to exactly that
+ * checkpoint in one call.
+ *
+ * A checkpoint is a plain snapshot, not a stack discipline: it can be
+ * restored any number of times, in any order relative to other
+ * checkpoints of the same solver, independent of how many further
+ * reveals happened on `inc` since it was captured. This is a natural
+ * fit for a planning search that wants to try several different
+ * "what if I added/dropped this cage" branches from the same base
+ * state without re-deriving that base state each time.
+ */
+typedef struct KeenHumanIncSolverState KeenHumanIncSolverState;
+
+/* Captures inc's complete current state (every cell's domain, every
+ * cage's op/value/tuple list, and every dirty flag). Returns NULL only
+ * on allocation failure. The result is independent of inc's subsequent
+ * lifetime -- keep it as long as needed, and restore it as many times
+ * as wanted, in any order relative to further reveals or other
+ * checkpoints. Free with keen_human_solver_state_free() when no longer
+ * needed. */
+KeenHumanIncSolverState *keen_human_solver_save_state(KeenHumanIncSolver *inc);
+
+/* Restores inc's state to exactly what it was when `state` was
+ * captured -- any reveals applied to inc since then are discarded, as
+ * if they had never happened. Does NOT consume or invalidate `state`;
+ * it remains valid to restore again later or to free. inc and state
+ * must come from the same original solver (same w/dsf and, in
+ * particular, the same cage geometry) -- restoring a state captured
+ * from a different solver instance is undefined behaviour. */
+void keen_human_solver_restore_state(KeenHumanIncSolver *inc,
+                                      const KeenHumanIncSolverState *state);
+
+/* Frees a checkpoint captured by keen_human_solver_save_state(). Safe
+ * to call on NULL. */
+void keen_human_solver_state_free(KeenHumanIncSolverState *state);
+
 #endif

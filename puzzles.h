@@ -839,6 +839,40 @@ struct game {
                                        int op, long value);
     char *(*incremental_solver_snapshot)(void *inc);
     void (*incremental_solver_destroy)(void *inc);
+
+    /*
+     * Optional. Save/restore checkpoints on top of the incremental
+     * solver above -- see keen_human_solver.h's "Save/restore
+     * checkpoints" section for the full argument. Lets a caller (e.g.
+     * clue-grouping planning trying, and possibly discarding, a
+     * candidate cage addition or removal) jump an open session back to
+     * an earlier point without rebuilding it from scratch by replaying
+     * every previously-committed reveal.
+     *
+     * incremental_solver_save_state(inc) captures inc's complete
+     * current state and returns an opaque handle, or NULL on allocation
+     * failure. The result is independent of inc's subsequent lifetime:
+     * it can be restored any number of times, in any order relative to
+     * further reveals or other checkpoints of the same session. The
+     * caller must eventually pass it to incremental_solver_free_state.
+     *
+     * incremental_solver_restore_state(inc, state) resets inc's state to
+     * exactly what it was when `state` was captured, discarding any
+     * reveals applied since. Does not consume `state` -- it remains
+     * valid to restore again or to free. state must have come from this
+     * same inc (or another session opened on the same params+desc); it
+     * is meaningless anywhere else.
+     *
+     * incremental_solver_free_state(state) releases a checkpoint.
+     *
+     * Games that implement the incremental_solver_* quartet above but
+     * not this trio leave all three of these fields NULL; a caller that
+     * wants save/restore should check incremental_solver_save_state
+     * (etc.) for NULL exactly like it already must for the quartet.
+     */
+    void *(*incremental_solver_save_state)(void *inc);
+    void (*incremental_solver_restore_state)(void *inc, void *state);
+    void (*incremental_solver_free_state)(void *state);
 };
 
 #define GET_HANDLE_AS_TYPE(dr, type) ((type*)((dr)->handle))
