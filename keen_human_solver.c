@@ -1531,3 +1531,154 @@ void keen_human_solver_destroy(KeenHumanIncSolver *inc)
     free(inc);
 }
 
+/* ====================================================================
+ * Save/restore checkpoints -- see keen_human_solver.h's doc comment for
+ * the calling contract.
+ *
+ * What needs copying: every field of Solver/Cage that a reveal can
+ * change. That's s->domain[] (a shorts), and per cage: op, value, n,
+ * cells[] (only a residual cage's n/cells ever actually change after
+ * creation, but copying all of every cage's is simplest and cheap),
+ * rowmask/colmask (ditto), tuples_valid, ntuples, the first ntuples
+ * rows of tuples[], dirty, and activated -- plus row_dirty[]/
+ * col_dirty[]/grid_dirty. NOT copied, because they're fixed for the
+ * solver's whole lifetime and never touched by a reveal: s->w, s->a,
+ * s->ncages, s->nowners[]/s->owners[] (cell-to-cage membership), and
+ * every KeenHumanIncSolver field outside s (real_ncages, home_row[],
+ * home_col[], row_residual_idx[], col_residual_idx[]) -- a state
+ * captured from one solver is only ever meaningful restored onto that
+ * same solver (see the header doc comment), so these never need to
+ * travel with the checkpoint at all.
+ *
+ * Only tuples[0..ntuples-1] is ever read by any consumer (enumerate_cage()
+ * always rebuilds ntuples from 0 when it re-enumerates, and every other
+ * technique loops i < ntuples), so copying exactly ntuples rows -- not
+ * the fixed MAX_TUPLES-row buffer each cage actually allocates -- keeps
+ * a checkpoint's size proportional to how constrained the puzzle
+ * currently is, not to this file's defensive worst-case cap. This
+ * matters here specifically because planning code is expected to take
+ * many checkpoints per puzzle (see keen_human_solver.h).
+ */
+typedef struct {
+    int op;
+    long value;
+    int n;
+    int cells[MAX_CAGE_CELLS];
+    unsigned int rowmask, colmask;
+    bool tuples_valid;
+    int ntuples;
+    unsigned char (*tuples)[MAX_CAGE_CELLS]; /* malloc'd, ntuples rows, or NULL iff ntuples==0 */
+    bool dirty;
+    bool activated;
+} CageState;
+
+struct KeenHumanIncSolverState {
+    int a, ncages;
+    unsigned short domain[MAX_A];
+    CageState *cages; /* [ncages] */
+    bool row_dirty[MAX_W], col_dirty[MAX_W];
+    bool grid_dirty;
+};
+
+KeenHumanIncSolverState *keen_human_solver_save_state(KeenHumanIncSolver *inc)
+{
+    Solver *s = &inc->s;
+    KeenHumanIncSolverState *st = malloc(sizeof(*st));
+    int i;
+
+    if (!st) return NULL;
+    st->a = s->a;
+    st->ncages = s->ncages;
+    memcpy(st->domain, s->domain, sizeof(unsigned short) * (size_t)s->a);
+
+    st->cages = malloc(sizeof(*st->cages) * (size_t)s->ncages);
+    if (!st->cages) { free(st); return NULL; }
+
+    for (i = 0; i < s->ncages; i++) {
+        Cage *cg = &s->cages[i];
+        CageState *cs = &st->cages[i];
+
+        cs->op = cg->op;
+        cs->value = cg->value;
+        cs->n = cg->n;
+        memcpy(cs->cells, cg->cells, sizeof(cg->cells));
+        cs->rowmask = cg->rowmask;
+        cs->colmask = cg->colmask;
+        cs->tuples_valid = cg->tuples_valid;
+        cs->ntuples = cg->ntuples;
+        cs->dirty = cg->dirty;
+        cs->activated = cg->activated;
+
+        if (cg->ntuples > 0) {
+            cs->tuples = malloc(sizeof(*cs->tuples) * (size_t)cg->ntuples);
+            if (!cs->tuples) {
+                int j;
+                for (j = 0; j < i; j++) free(st->cages[j].tuples);
+                free(st->cages);
+                free(st);
+                return NULL;
+            }
+            memcpy(cs->tuples, cg->tuples,
+                   sizeof(*cs->tuples) * (size_t)cg->ntuples);
+        } else {
+            cs->tuples = NULL;
+        }
+    }
+
+    memcpy(st->row_dirty, s->row_dirty, sizeof(st->row_dirty));
+    memcpy(st->col_dirty, s->col_dirty, sizeof(st->col_dirty));
+    st->grid_dirty = s->grid_dirty;
+
+    return st;
+}
+
+void keen_human_solver_restore_state(KeenHumanIncSolver *inc,
+                                      const KeenHumanIncSolverState *st)
+{
+    Solver *s = &inc->s;
+    int i;
+
+    assert(st->a == s->a && st->ncages == s->ncages);
+
+    memcpy(s->domain, st->domain, sizeof(unsigned short) * (size_t)s->a);
+
+    for (i = 0; i < s->ncages; i++) {
+        Cage *cg = &s->cages[i];
+        const CageState *cs = &st->cages[i];
+
+        cg->op = cs->op;
+        cg->value = cs->value;
+        cg->n = cs->n;
+        memcpy(cg->cells, cs->cells, sizeof(cg->cells));
+        cg->rowmask = cs->rowmask;
+        cg->colmask = cs->colmask;
+        cg->tuples_valid = cs->tuples_valid;
+        cg->ntuples = cs->ntuples;
+        cg->dirty = cs->dirty;
+        cg->activated = cs->activated;
+
+        /* cg->tuples itself (the MAX_TUPLES-row buffer allocated once in
+         * keen_human_solver_create()) is never reallocated or freed here
+         * -- only rows [0, ntuples) are ever read by any consumer (see
+         * this section's header comment), so restoring exactly that many
+         * rows is enough even though the buffer's capacity beyond
+         * ntuples is left holding whatever was there before. */
+        if (cs->ntuples > 0)
+            memcpy(cg->tuples, cs->tuples,
+                   sizeof(*cg->tuples) * (size_t)cs->ntuples);
+    }
+
+    memcpy(s->row_dirty, st->row_dirty, sizeof(s->row_dirty));
+    memcpy(s->col_dirty, st->col_dirty, sizeof(s->col_dirty));
+    s->grid_dirty = st->grid_dirty;
+}
+
+void keen_human_solver_state_free(KeenHumanIncSolverState *st)
+{
+    int i;
+    if (!st) return;
+    for (i = 0; i < st->ncages; i++) free(st->cages[i].tuples);
+    free(st->cages);
+    free(st);
+}
+
