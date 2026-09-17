@@ -1518,6 +1518,49 @@ static char *solve_game(const game_state *state, const game_state *currstate,
     return out;
 }
 
+/*
+ * Given a params/desc pair in which some cages' clues may have been
+ * replaced with the descriptor's own 'n' ("no clue") marker, report
+ * whatever the *unmodified* solver() above can deduce from the clues
+ * that are actually present -- run exactly the same way solve_game()
+ * runs it above, just capped at DIFF_EXTREME (no recursive guessing,
+ * since a partially-revealed puzzle isn't expected to be uniquely
+ * solvable) and tolerant of an incomplete result: solver()/
+ * latin_solver() never discard a partial deduction just because they
+ * couldn't finish, so soln[] is read regardless of what solver()
+ * returns.
+ *
+ * This performs no deduction of its own and adds no new technique --
+ * it only changes which of a puzzle's clues are visible to the same
+ * solver() used everywhere else in this file.
+ */
+static char *keen_solve_partial(const game_params *params, const char *desc)
+{
+    game_state *state;
+    int w, a, i;
+    digit *soln;
+    char *out;
+
+    state = new_game(NULL, params, desc);
+    w = state->par.w;
+    a = w * w;
+
+    soln = snewn(a, digit);
+    memset(soln, 0, a * sizeof(digit));
+
+    solver(w, state->clues->dsf, state->clues->clues, soln, DIFF_EXTREME);
+
+    out = snewn(a + 1, char);
+    for (i = 0; i < a; i++)
+        out[i] = '0' + soln[i];        /* soln[i] == 0 means undetermined */
+    out[a] = '\0';
+
+    sfree(soln);
+    free_game(state);
+
+    return out;
+}
+
 struct game_ui {
     /*
      * These are the coordinates of the currently highlighted
@@ -2579,6 +2622,7 @@ const struct game thegame = {
     false,			       /* wants_statusbar */
     false, NULL,                       /* timing_state */
     REQUIRE_RBUTTON | REQUIRE_NUMPAD,  /* flags */
+    keen_solve_partial,
 };
 
 #ifdef STANDALONE_SOLVER

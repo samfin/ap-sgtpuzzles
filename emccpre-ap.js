@@ -166,6 +166,14 @@ var command;
 var get_save_file, free_save_file
 var load_game
 
+// Solve-with-partial-clues: unlike get_save_file/free_save_file/
+// load_game above, this pair is also called from
+// static/puzzleframe.js (a different <script> sharing this page's
+// global scope but not initPuzzle()'s closure), so these must be
+// true top-level vars too, assigned (without `var`) inside
+// initPuzzle() below.
+var solve_partial_desc, free_solve_partial
+
 // The <form> encapsulating the menus.  Used by
 // js_get_selected_preset() and js_select_preset().
 var menuform = document.getElementById("gamemenu");
@@ -537,6 +545,11 @@ function initPuzzle() {
     get_save_file = Module.cwrap('get_save_file', 'number', []);
     free_save_file = Module.cwrap('free_save_file', 'void', ['number']);
     load_game = Module.cwrap('load_game', 'void', []);
+
+    solve_partial_desc = Module.cwrap('solve_partial_desc', 'number',
+                                       ['string', 'string']);
+    free_solve_partial = Module.cwrap('free_solve_partial', 'void',
+                                       ['number']);
 
     if (save_button) save_button.onclick = function(event) {
         if (dlg_dimmer === null) {

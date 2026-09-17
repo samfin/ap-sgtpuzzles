@@ -128,6 +128,8 @@ void dlg_return_sval(int index, const char *val);
 void dlg_return_ival(int index, int val);
 void resize_puzzle(int w, int h);
 void restore_puzzle_size(int w, int h);
+char *solve_partial_desc(const char *paramstr, const char *desc);
+void free_solve_partial(char *buffer);
 void rescale_puzzle(void);
 void set_allowed_shortcuts(bool new_game_allowed, bool solve_game_allowed, bool undo_allowed);
 
@@ -819,6 +821,37 @@ char *get_text_format(void)
 }
 
 void free_text_format(char *buffer)
+{
+    sfree(buffer);
+}
+
+/* ----------------------------------------------------------------------
+ * Called from JS to find out what a game's *existing, unmodified*
+ * solver can deduce given a possibly-partial clue set. Unlike
+ * everything else in this file, this does not touch the live midend
+ * global at all -- it works from a bare params/desc string pair, so it
+ * can be called for any puzzle at any time, independent of whatever
+ * happens to be loaded in the visible puzzle right now. Only
+ * meaningful for games that implement game.solve_partial (currently
+ * just Keen); returns NULL for any other game.
+ */
+char *solve_partial_desc(const char *paramstr, const char *desc)
+{
+    game_params *params;
+    char *result;
+
+    if (!thegame.solve_partial)
+        return NULL;
+
+    params = thegame.default_params();
+    thegame.decode_params(params, paramstr);
+    result = thegame.solve_partial(params, desc);
+    thegame.free_params(params);
+
+    return result;
+}
+
+void free_solve_partial(char *buffer)
 {
     sfree(buffer);
 }

@@ -757,6 +757,25 @@ struct game {
     bool is_timed;
     bool (*timing_state)(const game_state *state, game_ui *ui);
     int flags;
+    /*
+     * Optional. Given a game_params and a full-size game descriptor
+     * in which some clues may have been replaced with the game's own
+     * "no clue" marker (for Keen, the 'n' block in its descriptor
+     * syntax; see keen.c), returns a string of w*w digit characters
+     * (using the same '0' == undetermined / '1'..'9' convention as
+     * solve()'s own output) giving whatever the game's *existing,
+     * unmodified* solver can deduce from the clues that are actually
+     * present -- exactly the same deductions it would make if asked
+     * to solve the full puzzle, just possibly incomplete because
+     * some clues are missing.
+     *
+     * Returns NULL if this game doesn't implement this operation, or
+     * if params/desc fail to parse. Not used by ordinary play; it
+     * exists purely so a client can plan a progressive reveal of a
+     * puzzle's clues by asking "what would already be forced if only
+     * this subset of clues were visible?".
+     */
+    char *(*solve_partial)(const game_params *params, const char *desc);
 };
 
 #define GET_HANDLE_AS_TYPE(dr, type) ((type*)((dr)->handle))
