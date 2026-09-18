@@ -2060,6 +2060,21 @@ char *midend_text_format(midend *me)
 	return NULL;
 }
 
+/*
+ * Analogous to midend_text_format() above, but for the optional
+ * current_grid() hook (currently just Keen) instead of text_format():
+ * hands back the live, currently-displayed state's own current_grid()
+ * output, or NULL if this game doesn't implement it or nothing is
+ * loaded yet.
+ */
+char *midend_current_grid(midend *me)
+{
+    if (me->ourgame->current_grid && me->statepos > 0)
+	return me->ourgame->current_grid(me->states[me->statepos-1].state);
+    else
+	return NULL;
+}
+
 const char *midend_solve(midend *me)
 {
     game_state *s;

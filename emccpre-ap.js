@@ -173,6 +173,7 @@ var load_game
 // true top-level vars too, assigned (without `var`) inside
 // initPuzzle() below.
 var solve_partial_desc, free_solve_partial
+var get_current_grid, free_current_grid
 
 // The <form> encapsulating the menus.  Used by
 // js_get_selected_preset() and js_select_preset().
@@ -550,6 +551,10 @@ function initPuzzle() {
                                        ['string', 'string']);
     free_solve_partial = Module.cwrap('free_solve_partial', 'void',
                                        ['number']);
+
+    get_current_grid = Module.cwrap('get_current_grid', 'number', []);
+    free_current_grid = Module.cwrap('free_current_grid', 'void',
+                                      ['number']);
 
     if (save_button) save_button.onclick = function(event) {
         if (dlg_dimmer === null) {

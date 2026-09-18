@@ -48,6 +48,10 @@ set(emcc_export_list
   # Solve-with-partial-clues (used by Archipelago clue-grouping)
   _solve_partial_desc
   _free_solve_partial
+  # Read the live in-progress grid (used by Archipelago digit-group
+  # completion checks)
+  _get_current_grid
+  _free_current_grid
   # Callbacks to return values from dialog boxes
   _dlg_return_sval
   _dlg_return_ival

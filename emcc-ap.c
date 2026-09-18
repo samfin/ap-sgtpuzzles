@@ -130,6 +130,8 @@ void resize_puzzle(int w, int h);
 void restore_puzzle_size(int w, int h);
 char *solve_partial_desc(const char *paramstr, const char *desc);
 void free_solve_partial(char *buffer);
+char *get_current_grid(void);
+void free_current_grid(char *buffer);
 void rescale_puzzle(void);
 void set_allowed_shortcuts(bool new_game_allowed, bool solve_game_allowed, bool undo_allowed);
 
@@ -852,6 +854,23 @@ char *solve_partial_desc(const char *paramstr, const char *desc)
 }
 
 void free_solve_partial(char *buffer)
+{
+    sfree(buffer);
+}
+
+/* ----------------------------------------------------------------------
+ * Called from JS to read the live, currently-displayed puzzle's actual
+ * entered digits (not its solution), via midend_current_grid() ->
+ * thegame.current_grid(). Unlike solve_partial_desc() above, this DOES
+ * depend on whatever's currently loaded in the live midend -- it's not
+ * a pure function of any arguments.
+ */
+char *get_current_grid(void)
+{
+    return midend_current_grid(me);
+}
+
+void free_current_grid(char *buffer)
 {
     sfree(buffer);
 }

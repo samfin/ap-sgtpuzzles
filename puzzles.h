@@ -341,6 +341,7 @@ char *midend_get_game_id(midend *me);
 char *midend_get_random_seed(midend *me);
 bool midend_can_format_as_text_now(midend *me);
 char *midend_text_format(midend *me);
+char *midend_current_grid(midend *me);
 const char *midend_solve(midend *me);
 int midend_status(midend *me);
 bool midend_can_undo(midend *me);
@@ -776,6 +777,22 @@ struct game {
      * this subset of clues were visible?".
      */
     char *(*solve_partial)(const game_params *params, const char *desc);
+
+    /*
+     * Optional. Given a *live* game_state (the player's actual
+     * in-progress grid, not a freshly solved/generated one), returns
+     * a string of w*w digit characters using the same '0' ==
+     * undetermined / '1'..'9' convention as solve_partial()'s output
+     * -- i.e. exactly what the player has entered so far, verbatim,
+     * with no solving performed. Used via midend_current_grid() so a
+     * client can compare the player's live entries against
+     * solve_partial()'s forced-cell output for a given clue subset,
+     * to detect when a progressive-reveal "digit group" has been
+     * correctly completed (see keen_current_grid() in keen.c).
+     *
+     * Returns NULL if this game doesn't implement this operation.
+     */
+    char *(*current_grid)(const game_state *state);
 };
 
 #define GET_HANDLE_AS_TYPE(dr, type) ((type*)((dr)->handle))

@@ -1534,6 +1534,27 @@ static char *solve_game(const game_state *state, const game_state *currstate,
  * it only changes which of a puzzle's clues are visible to the same
  * solver() used everywhere else in this file.
  */
+/*
+ * Read off the player's live in-progress grid, verbatim -- no
+ * solving, no validation, just state->grid[] rendered in the same
+ * '0'..'9' digit-string convention keen_solve_partial() uses. Used
+ * via midend_current_grid() so a client can tell whether a
+ * progressive-reveal "digit group" has actually been filled in
+ * correctly yet, by comparing this against keen_solve_partial()'s
+ * output for that group's clue subset.
+ */
+static char *keen_current_grid(const game_state *state)
+{
+    int w = state->par.w, a = w * w, i;
+    char *out = snewn(a + 1, char);
+
+    for (i = 0; i < a; i++)
+        out[i] = '0' + state->grid[i];
+    out[a] = '\0';
+
+    return out;
+}
+
 static char *keen_solve_partial(const game_params *params, const char *desc)
 {
     game_state *state;
@@ -2623,6 +2644,7 @@ const struct game thegame = {
     false, NULL,                       /* timing_state */
     REQUIRE_RBUTTON | REQUIRE_NUMPAD,  /* flags */
     keen_solve_partial,
+    keen_current_grid,
 };
 
 #ifdef STANDALONE_SOLVER
