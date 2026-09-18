@@ -174,6 +174,7 @@ var load_game
 // initPuzzle() below.
 var solve_partial_desc, free_solve_partial
 var get_current_grid, free_current_grid
+var reveal_clues
 
 // The <form> encapsulating the menus.  Used by
 // js_get_selected_preset() and js_select_preset().
@@ -555,6 +556,8 @@ function initPuzzle() {
     get_current_grid = Module.cwrap('get_current_grid', 'number', []);
     free_current_grid = Module.cwrap('free_current_grid', 'void',
                                       ['number']);
+
+    reveal_clues = Module.cwrap('reveal_clues', 'string', ['string']);
 
     if (save_button) save_button.onclick = function(event) {
         if (dlg_dimmer === null) {

@@ -132,6 +132,7 @@ char *solve_partial_desc(const char *paramstr, const char *desc);
 void free_solve_partial(char *buffer);
 char *get_current_grid(void);
 void free_current_grid(char *buffer);
+const char *reveal_clues(const char *desc);
 void rescale_puzzle(void);
 void set_allowed_shortcuts(bool new_game_allowed, bool solve_game_allowed, bool undo_allowed);
 
@@ -873,6 +874,27 @@ char *get_current_grid(void)
 void free_current_grid(char *buffer)
 {
     sfree(buffer);
+}
+
+/* ----------------------------------------------------------------------
+ * Called from JS to push newly-unlocked clues into the live,
+ * currently-displayed puzzle in place, without disturbing the
+ * player's entered grid/pencil marks -- see thegame.reveal_clues()'s
+ * doc comment in puzzles.h for the full contract. `desc` must be a
+ * full "block structure,clues" descriptor for the SAME underlying
+ * puzzle currently loaded.
+ *
+ * Returns NULL on success (and forces a redraw so the newly-revealed
+ * clues actually appear), or an error string on failure. The error
+ * string, when non-NULL, is always a literal -- there is nothing to
+ * free.
+ */
+const char *reveal_clues(const char *desc)
+{
+    const char *err = midend_reveal_clues(me, desc);
+    if (!err)
+        midend_force_redraw(me);
+    return err;
 }
 
 /* ----------------------------------------------------------------------

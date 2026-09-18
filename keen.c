@@ -1555,6 +1555,91 @@ static char *keen_current_grid(const game_state *state)
     return out;
 }
 
+/*
+ * Push newly-unlocked clues into an already-live game_state in
+ * place -- see the reveal_clues field's doc comment in puzzles.h for
+ * the full contract. `desc` must describe the exact same block/cage
+ * structure this state already has (a progressive-reveal client's
+ * descriptors are always re-masked variants of the very same puzzle,
+ * so this should never actually mismatch in practice; the check
+ * exists as a safety net, not because it's expected to fire).
+ *
+ * Deliberately does not touch state->grid or state->pencil, and only
+ * ever moves a cage's clue from C_NO_CLUE to something real -- never
+ * the reverse, and never overwrites an already-revealed clue -- so
+ * this is always a safe, idempotent, monotonic operation to call with
+ * whatever the client currently believes should be visible.
+ */
+static const char *keen_reveal_clues(game_state *state, const char *desc)
+{
+    int w = state->par.w, a = w * w, i;
+    const char *p = desc;
+    const char *ret;
+    DSF *dsf;
+
+    dsf = dsf_new_min(a);
+    ret = parse_block_structure(&p, w, dsf);
+    if (ret) {
+        dsf_free(dsf);
+        return ret;
+    }
+
+    for (i = 0; i < a; i++) {
+        if (dsf_minimal(dsf, i) != dsf_minimal(state->clues->dsf, i)) {
+            dsf_free(dsf);
+            return "Block structure does not match the puzzle already in progress";
+        }
+    }
+    dsf_free(dsf);
+
+    if (*p != ',') {
+        return "Expected ',' after block structure description";
+    }
+    p++;
+
+    for (i = 0; i < a; i++) {
+        if (dsf_minimal(state->clues->dsf, i) == i) {
+            char cluetype = *p;
+            unsigned long clue;
+
+            if (!cluetype) {
+                return "Too few clues for block structure";
+            }
+            p++;
+
+            switch (cluetype) {
+              case 'n':
+                clue = C_NO_CLUE;
+                break;
+              case 'a':
+                clue = C_ADD;
+                break;
+              case 'm':
+                clue = C_MUL;
+                break;
+              case 's':
+                clue = C_SUB;
+                break;
+              case 'd':
+                clue = C_DIV;
+                break;
+              default:
+                return "Unrecognised clue type";
+            }
+            if (clue != C_NO_CLUE) {
+                clue |= atol(p);
+                while (*p && isdigit((unsigned char)*p)) p++;
+            }
+
+            if (state->clues->clues[i] == C_NO_CLUE) {
+                state->clues->clues[i] = clue;
+            }
+        }
+    }
+
+    return NULL;
+}
+
 static char *keen_solve_partial(const game_params *params, const char *desc)
 {
     game_state *state;
@@ -2645,6 +2730,7 @@ const struct game thegame = {
     REQUIRE_RBUTTON | REQUIRE_NUMPAD,  /* flags */
     keen_solve_partial,
     keen_current_grid,
+    keen_reveal_clues,
 };
 
 #ifdef STANDALONE_SOLVER

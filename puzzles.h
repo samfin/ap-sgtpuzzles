@@ -342,6 +342,7 @@ char *midend_get_random_seed(midend *me);
 bool midend_can_format_as_text_now(midend *me);
 char *midend_text_format(midend *me);
 char *midend_current_grid(midend *me);
+const char *midend_reveal_clues(midend *me, const char *desc);
 const char *midend_solve(midend *me);
 int midend_status(midend *me);
 bool midend_can_undo(midend *me);
@@ -793,6 +794,34 @@ struct game {
      * Returns NULL if this game doesn't implement this operation.
      */
     char *(*current_grid)(const game_state *state);
+
+    /*
+     * Optional. Given a *live* game_state and a full-size game
+     * descriptor for the SAME underlying puzzle (identical
+     * block/cage structure -- only which cages' clues are masked
+     * with the game's "no clue" marker may differ), reveals any
+     * newly-unmasked clues into that state's own clue data *in
+     * place*, without touching the player's entered grid/pencil
+     * marks at all. Only ever moves a cage from hidden to revealed;
+     * never hides an already-visible clue or changes its value, even
+     * if `desc` disagrees, since some games (Keen) share clue data by
+     * reference across the whole undo/redo history (see keen.c's
+     * dup_game()), so revealing via the live/current state naturally
+     * makes the newly-visible clues available throughout that
+     * history too.
+     *
+     * This exists so a client can push newly-unlocked clues into an
+     * *already-open* puzzle (e.g. on receiving a new item from an
+     * Archipelago server) without reloading/regenerating the puzzle,
+     * which would otherwise discard the player's in-progress entries.
+     *
+     * Returns NULL on success, or an error string (a literal, never
+     * dynamically allocated -- callers must not free it) if `desc`
+     * doesn't parse or describes a different cage structure than
+     * `state` already has. Games that don't implement this leave the
+     * field NULL.
+     */
+    const char *(*reveal_clues)(game_state *state, const char *desc);
 };
 
 #define GET_HANDLE_AS_TYPE(dr, type) ((type*)((dr)->handle))

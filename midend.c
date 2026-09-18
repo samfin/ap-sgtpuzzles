@@ -2075,6 +2075,22 @@ char *midend_current_grid(midend *me)
 	return NULL;
 }
 
+/*
+ * Analogous to midend_current_grid() above, but for the optional
+ * reveal_clues() hook (currently just Keen): pushes newly-unlocked
+ * clues into the live, currently-displayed state's own clue data in
+ * place, leaving its entered grid/pencil marks untouched. See the
+ * hook's own doc comment in puzzles.h for the full contract.
+ */
+const char *midend_reveal_clues(midend *me, const char *desc)
+{
+    if (me->ourgame->reveal_clues && me->statepos > 0)
+	return me->ourgame->reveal_clues(me->states[me->statepos-1].state,
+                                          desc);
+    else
+	return "This game does not support revealing clues in place";
+}
+
 const char *midend_solve(midend *me)
 {
     game_state *s;
