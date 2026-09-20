@@ -2107,12 +2107,26 @@ static game_state *execute_move(const game_state *from, const char *move)
 	return ret;
     } else if (move[0] == 'F') {
 	/*
-	 * Bulk pencil-mark SET (not toggle), for an arbitrary list of
-	 * cells in one atomic, undoable move -- "Fx0,y0,b0;x1,y1,b1;...".
-	 * Each bi is a bitmask using the same 1<<1..1<<w convention as
-	 * the 'P' move and the 'M' move above (bit n set means digit n
-	 * is pencilled in), and REPLACES whatever pencil marks that
-	 * cell already had, rather than XORing like 'P' does.
+	 * Bulk cell SET, for an arbitrary list of cells in one atomic,
+	 * undoable move -- "Fx0,y0,e0;x1,y1,e1;...". Each entry ei is
+	 * either:
+	 *
+	 *   - a bitmask (same 1<<1..1<<w convention as the 'P' and 'M'
+	 *     moves: bit n set means digit n is pencilled in), which
+	 *     REPLACES whatever pencil marks that cell already had
+	 *     (rather than XORing like 'P' does); or
+	 *   - the literal letter 'D' followed by a single digit 1..w,
+	 *     which fills that cell with the real digit instead of
+	 *     pencilling anything (same effect as an 'R' move on that
+	 *     cell: clears any pencil marks and re-checks completion).
+	 *
+	 * The digit-fill form exists so the client can fill in a cell
+	 * outright, in the same atomic move as every other cell's
+	 * pencil marks, whenever isolated-candidate reasoning narrows
+	 * that cell down to exactly one possibility -- see
+	 * handleCellDoubleRightClicked() in src/puzzles.js, which
+	 * chooses per cell between the two entry forms after computing
+	 * each cell's final (row/column-eliminated) candidate set.
 	 *
 	 * This exists for the client's "double-right-click a clued
 	 * cage to pencil in its in-isolation candidates" feature (see
@@ -2122,31 +2136,49 @@ static game_state *execute_move(const game_state *from, const char *move)
 	 * currently visible, what its arithmetic allows, row/column
 	 * elimination) happens client-side, in JS, using data the
 	 * client already has; this move is deliberately just a dumb,
-	 * generic "set these cells' pencil marks" primitive, so that
-	 * applying it goes through the normal execute_move()/undo-
-	 * stack machinery (via midend_apply_move() in midend.c) like
-	 * any other move, rather than mutating live state in place the
-	 * way reveal_clues() does above (that one is NOT meant to be
-	 * undoable; this one specifically IS, per the client's design).
+	 * generic "set these cells" primitive, so that applying it goes
+	 * through the normal execute_move()/undo-stack machinery (via
+	 * midend_apply_move() in midend.c) like any other move, rather
+	 * than mutating live state in place the way reveal_clues() does
+	 * above (that one is NOT meant to be undoable; this one
+	 * specifically IS, per the client's design).
 	 *
 	 * A cell that's already filled with a real digit is silently
-	 * left untouched (never given pencil marks) -- the client never
-	 * asks for this deliberately, but this stays consistent with
-	 * "can't make pencil marks in a filled square" in
-	 * interpret_move() above even if it did.
+	 * left untouched by the pencil-bitmask form (never given pencil
+	 * marks) -- the client never asks for this deliberately, but
+	 * this stays consistent with "can't make pencil marks in a
+	 * filled square" in interpret_move() above even if it did. The
+	 * digit-fill form is likewise a no-op on an already-filled cell
+	 * (the client only ever targets cells it already confirmed are
+	 * completely blank).
 	 */
 	ret = dup_game(from);
 	{
 	    const char *p = move + 1;
 	    while (*p) {
-		if (sscanf(p, "%d,%d,%d%n", &x, &y, &n, &len) != 3 ||
-		    x < 0 || x >= w || y < 0 || y >= w ||
-		    n < 0 || n >= (1 << (w+1))) {
+		int digit;
+		if (sscanf(p, "%d,%d,D%d%n", &x, &y, &digit, &len) == 3) {
+		    if (x < 0 || x >= w || y < 0 || y >= w ||
+			digit < 1 || digit > w) {
+			free_game(ret);
+			return NULL;
+		    }
+		    if (!ret->grid[y*w+x]) {
+			ret->grid[y*w+x] = digit;
+			ret->pencil[y*w+x] = 0;
+
+			if (!ret->completed && !check_errors(ret, NULL))
+			    ret->completed = true;
+		    }
+		} else if (sscanf(p, "%d,%d,%d%n", &x, &y, &n, &len) == 3 &&
+		    x >= 0 && x < w && y >= 0 && y < w &&
+		    n >= 0 && n < (1 << (w+1))) {
+		    if (!ret->grid[y*w+x])
+			ret->pencil[y*w+x] = n;
+		} else {
 		    free_game(ret);
 		    return NULL;
 		}
-		if (!ret->grid[y*w+x])
-		    ret->pencil[y*w+x] = n;
 		p += len;
 		if (*p == ';')
 		    p++;
