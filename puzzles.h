@@ -343,6 +343,7 @@ bool midend_can_format_as_text_now(midend *me);
 char *midend_text_format(midend *me);
 char *midend_current_grid(midend *me);
 const char *midend_reveal_clues(midend *me, const char *desc);
+const char *midend_apply_move(midend *me, const char *movestr);
 const char *midend_solve(midend *me);
 int midend_status(midend *me);
 bool midend_can_undo(midend *me);

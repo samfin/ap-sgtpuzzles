@@ -175,6 +175,7 @@ var load_game
 var solve_partial_desc, free_solve_partial
 var get_current_grid, free_current_grid
 var reveal_clues
+var apply_move
 var resize_puzzle, restore_puzzle_size
 
 // The <form> encapsulating the menus.  Used by
@@ -367,13 +368,44 @@ function initPuzzle() {
                                  ['number', 'number', 'number']);
     var mouseup = Module.cwrap('mouseup', 'boolean',
                                ['number', 'number', 'number']);
-    
+    var get_tilesize = Module.cwrap('get_tilesize', 'number', []);
+
     var touchEmulationDown = false;
     var touchEmulationActive = false;
     var touchEmulationButton = 0;
     var touchEmulationStartPos = {x: 0, y: 0};
     var touchEmulationStartScreenPos = {x: 0, y: 0};
     const touchEmulationDragThreshold = 10;
+
+    // Double-right-click-on-a-cage detection, for the "pencil in this
+    // cage's in-isolation candidates" feature (see
+    // handleCellDoubleRightClicked() in src/puzzles.js, which does all
+    // the actual cage/arithmetic reasoning once notified). This only
+    // needs to know WHICH CELL got clicked twice in a row within a
+    // short window -- everything else about the feature lives in the
+    // parent frame. Deliberately independent of the native
+    // mousedown()/interpret_move() call below (which still runs
+    // exactly as before, e.g. still moving the normal pencil-mode
+    // highlight): this is a pure JS-side observer bolted on top, not a
+    // replacement for anything.
+    //
+    // tx/ty are derived with the same FROMCOORD() arithmetic keen.c's
+    // own interpret_move() uses (see keen.c), using get_tilesize()
+    // (-> midend_tilesize()) so this needs no game-specific constant
+    // and stays correct across zoom/resize/device-pixel-ratio -- only
+    // the grid width bound-check (which this can't do without knowing
+    // w) is left to the parent, which already knows it.
+    var lastRightClickCell = null;
+    const doubleRightClickThresholdMs = 500;
+
+    function cellFromCanvasXY(x, y) {
+        var ts = get_tilesize();
+        if (!ts) return null;
+        var border = Math.floor(ts / 2);
+        var tx = Math.floor((Math.trunc(x) + (ts - border)) / ts) - 1;
+        var ty = Math.floor((Math.trunc(y) + (ts - border)) / ts) - 1;
+        return {tx: tx, ty: ty};
+    }
 
     var button_phys2log = [null, null, null];
     var buttons_down = function() {
@@ -417,6 +449,20 @@ function initPuzzle() {
             if (mousedown(xy.x, xy.y, logbutton))
                 event.preventDefault();
             button_phys2log[event.button] = logbutton;
+
+            if (logbutton == 2) {
+                var cell = cellFromCanvasXY(xy.x, xy.y);
+                var now = Date.now();
+                if (cell && lastRightClickCell &&
+                    lastRightClickCell.tx == cell.tx &&
+                    lastRightClickCell.ty == cell.ty &&
+                    now - lastRightClickCell.time < doubleRightClickThresholdMs) {
+                    lastRightClickCell = null;
+                    sendMessage("cellDoubleRightClicked", cell.tx, cell.ty);
+                } else {
+                    lastRightClickCell = cell ? {tx: cell.tx, ty: cell.ty, time: now} : null;
+                }
+            }
         }
     };
     onscreen_canvas.onpointermove = function (event) {
@@ -559,6 +605,7 @@ function initPuzzle() {
                                       ['number']);
 
     reveal_clues = Module.cwrap('reveal_clues', 'string', ['string']);
+    apply_move = Module.cwrap('apply_move', 'string', ['string']);
 
     if (save_button) save_button.onclick = function(event) {
         if (dlg_dimmer === null) {

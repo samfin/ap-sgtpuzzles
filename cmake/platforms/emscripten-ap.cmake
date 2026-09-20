@@ -56,6 +56,12 @@ set(emcc_export_list
   # (used so a live puzzle updates immediately on receiving an
   # Archipelago item, without reloading and losing in-progress entries)
   _reveal_clues
+  # Apply an arbitrary move string as a normal, undoable move (used by
+  # the "double-right-click a clued cage to pencil in candidates"
+  # feature), and read the live tile size (used by that same feature to
+  # translate a raw mouse click into a grid cell client-side)
+  _apply_move
+  _get_tilesize
   # Callbacks to return values from dialog boxes
   _dlg_return_sval
   _dlg_return_ival

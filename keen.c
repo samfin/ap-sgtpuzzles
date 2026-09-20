@@ -2021,7 +2021,7 @@ static game_state *execute_move(const game_state *from, const char *move)
 {
     int w = from->par.w, a = w*w;
     game_state *ret;
-    int x, y, i, n;
+    int x, y, i, n, len;
 
     if (move[0] == 'S') {
 	ret = dup_game(from);
@@ -2068,6 +2068,58 @@ static game_state *execute_move(const game_state *from, const char *move)
 	for (i = 0; i < a; i++) {
 	    if (!ret->grid[i])
 		ret->pencil[i] = (1 << (w+1)) - (1 << 1);
+	}
+	return ret;
+    } else if (move[0] == 'F') {
+	/*
+	 * Bulk pencil-mark SET (not toggle), for an arbitrary list of
+	 * cells in one atomic, undoable move -- "Fx0,y0,b0;x1,y1,b1;...".
+	 * Each bi is a bitmask using the same 1<<1..1<<w convention as
+	 * the 'P' move and the 'M' move above (bit n set means digit n
+	 * is pencilled in), and REPLACES whatever pencil marks that
+	 * cell already had, rather than XORing like 'P' does.
+	 *
+	 * This exists for the client's "double-right-click a clued
+	 * cage to pencil in its in-isolation candidates" feature (see
+	 * cageCandidateDigits()/handleCellDoubleRightClicked() in
+	 * src/puzzles.js and src/keenDivision.js): all the puzzle-
+	 * specific reasoning (which cage, whether its clue is
+	 * currently visible, what its arithmetic allows, row/column
+	 * elimination) happens client-side, in JS, using data the
+	 * client already has; this move is deliberately just a dumb,
+	 * generic "set these cells' pencil marks" primitive, so that
+	 * applying it goes through the normal execute_move()/undo-
+	 * stack machinery (via midend_apply_move() in midend.c) like
+	 * any other move, rather than mutating live state in place the
+	 * way reveal_clues() does above (that one is NOT meant to be
+	 * undoable; this one specifically IS, per the client's design).
+	 *
+	 * A cell that's already filled with a real digit is silently
+	 * left untouched (never given pencil marks) -- the client never
+	 * asks for this deliberately, but this stays consistent with
+	 * "can't make pencil marks in a filled square" in
+	 * interpret_move() above even if it did.
+	 */
+	ret = dup_game(from);
+	{
+	    const char *p = move + 1;
+	    while (*p) {
+		if (sscanf(p, "%d,%d,%d%n", &x, &y, &n, &len) != 3 ||
+		    x < 0 || x >= w || y < 0 || y >= w ||
+		    n < 0 || n >= (1 << (w+1))) {
+		    free_game(ret);
+		    return NULL;
+		}
+		if (!ret->grid[y*w+x])
+		    ret->pencil[y*w+x] = n;
+		p += len;
+		if (*p == ';')
+		    p++;
+		else if (*p != '\0') {
+		    free_game(ret);
+		    return NULL;
+		}
+	    }
 	}
 	return ret;
     } else

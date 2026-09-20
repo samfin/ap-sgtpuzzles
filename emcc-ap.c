@@ -133,6 +133,8 @@ void free_solve_partial(char *buffer);
 char *get_current_grid(void);
 void free_current_grid(char *buffer);
 const char *reveal_clues(const char *desc);
+const char *apply_move(const char *movestr);
+int get_tilesize(void);
 void rescale_puzzle(void);
 void set_allowed_shortcuts(bool new_game_allowed, bool solve_game_allowed, bool undo_allowed);
 
@@ -895,6 +897,35 @@ const char *reveal_clues(const char *desc)
     if (!err)
         midend_force_redraw(me);
     return err;
+}
+
+/* ----------------------------------------------------------------------
+ * Called from JS to apply an arbitrary move string to the live,
+ * currently-displayed puzzle as a normal, undoable move -- see
+ * midend_apply_move()'s doc comment in midend.c for the full contract.
+ * Used by the "double-right-click a clued cage to pencil in
+ * candidates" feature (src/puzzles.js), which builds the move string
+ * client-side and just needs somewhere to hand it in.
+ *
+ * Returns NULL on success, or an error string on failure (always a
+ * literal -- nothing to free).
+ */
+const char *apply_move(const char *movestr)
+{
+    return midend_apply_move(me, movestr);
+}
+
+/* ----------------------------------------------------------------------
+ * Called from JS to read the actual on-screen tile size (in the same
+ * canvas-pixel coordinate space mousedown()/mouseup()/mousemove() take
+ * their x,y in), so it can translate a raw mouse position into a
+ * (column, row) cell the same way the native FROMCOORD() macro would,
+ * without needing its own copy of TILESIZE/BORDER or the current grid
+ * width -- see the double-right-click detection in emccpre-ap.js.
+ */
+int get_tilesize(void)
+{
+    return midend_tilesize(me);
 }
 
 /* ----------------------------------------------------------------------
