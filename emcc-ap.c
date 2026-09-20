@@ -132,6 +132,8 @@ char *solve_partial_desc(const char *paramstr, const char *desc);
 void free_solve_partial(char *buffer);
 char *get_current_grid(void);
 void free_current_grid(char *buffer);
+char *get_current_pencil(void);
+void free_current_pencil(char *buffer);
 const char *reveal_clues(const char *desc);
 const char *apply_move(const char *movestr);
 int get_tilesize(void);
@@ -874,6 +876,24 @@ char *get_current_grid(void)
 }
 
 void free_current_grid(char *buffer)
+{
+    sfree(buffer);
+}
+
+/* ----------------------------------------------------------------------
+ * Same as get_current_grid() above, but for the live, currently-
+ * displayed puzzle's PENCIL marks (state->pencil[], not its entered
+ * digits), via midend_current_pencil() -> thegame.current_pencil().
+ * Used by the "double-right-click a clued cage" feature in
+ * src/puzzles.js to tell whether the double-right-clicked cell already
+ * has any pencil marks in it before overwriting them.
+ */
+char *get_current_pencil(void)
+{
+    return midend_current_pencil(me);
+}
+
+void free_current_pencil(char *buffer)
 {
     sfree(buffer);
 }

@@ -2076,6 +2076,21 @@ char *midend_current_grid(midend *me)
 }
 
 /*
+ * Analogous to midend_current_grid() immediately above, but for the
+ * optional current_pencil() hook (currently just Keen) instead of
+ * current_grid(): hands back the live, currently-displayed state's
+ * own current_pencil() output, or NULL if this game doesn't implement
+ * it or nothing is loaded yet.
+ */
+char *midend_current_pencil(midend *me)
+{
+    if (me->ourgame->current_pencil && me->statepos > 0)
+	return me->ourgame->current_pencil(me->states[me->statepos-1].state);
+    else
+	return NULL;
+}
+
+/*
  * Analogous to midend_current_grid() above, but for the optional
  * reveal_clues() hook (currently just Keen): pushes newly-unlocked
  * clues into the live, currently-displayed state's own clue data in

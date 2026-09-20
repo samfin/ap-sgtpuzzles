@@ -174,6 +174,7 @@ var load_game
 // initPuzzle() below.
 var solve_partial_desc, free_solve_partial
 var get_current_grid, free_current_grid
+var get_current_pencil, free_current_pencil
 var reveal_clues
 var apply_move
 var resize_puzzle, restore_puzzle_size
@@ -603,6 +604,10 @@ function initPuzzle() {
     get_current_grid = Module.cwrap('get_current_grid', 'number', []);
     free_current_grid = Module.cwrap('free_current_grid', 'void',
                                       ['number']);
+
+    get_current_pencil = Module.cwrap('get_current_pencil', 'number', []);
+    free_current_pencil = Module.cwrap('free_current_pencil', 'void',
+                                        ['number']);
 
     reveal_clues = Module.cwrap('reveal_clues', 'string', ['string']);
     apply_move = Module.cwrap('apply_move', 'string', ['string']);

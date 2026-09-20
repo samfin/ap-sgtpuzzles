@@ -52,6 +52,8 @@ set(emcc_export_list
   # completion checks)
   _get_current_grid
   _free_current_grid
+  _get_current_pencil
+  _free_current_pencil
   # Reveal newly-unlocked clues into an already-open puzzle in place
   # (used so a live puzzle updates immediately on receiving an
   # Archipelago item, without reloading and losing in-progress entries)

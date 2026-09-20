@@ -1556,6 +1556,41 @@ static char *keen_current_grid(const game_state *state)
 }
 
 /*
+ * Read off the player's live pencil marks, verbatim -- no solving, no
+ * validation, just state->pencil[] rendered as a comma-separated list
+ * of decimal bitmasks (same 1<<1..1<<w convention as the 'P'/'F' moves
+ * in execute_move() above), one entry per cell in the same row-major
+ * order keen_current_grid() uses. Used via midend_current_pencil() so
+ * a client can tell whether a specific cell already has any pencil
+ * marks in it before overwriting them -- see the "double-right-click a
+ * clued cage" feature in src/puzzles.js, which skips a cell entirely
+ * (rather than clobbering it) if it isn't completely blank, i.e. it
+ * already holds a real digit OR already has some pencil marks, either
+ * from a previous double-right-click or the player's own manual 'P'
+ * toggles.
+ *
+ * Mirrors the encode_block_structure()/desc-building style earlier in
+ * this file: over-allocate generously (up to 5 decimal digits plus a
+ * separator per cell is always enough, since a pencil bitmask never
+ * exceeds (1 << (w+1)) - 1 and w is capped well under four digits),
+ * build with sprintf(), then sresize() down to the string's real
+ * length.
+ */
+static char *keen_current_pencil(const game_state *state)
+{
+    int w = state->par.w, a = w * w, i;
+    char *out = snewn(6 * a + 1, char);
+    char *p = out;
+
+    for (i = 0; i < a; i++)
+        p += sprintf(p, i ? ",%d" : "%d", state->pencil[i]);
+    *p++ = '\0';
+    out = sresize(out, p - out, char);
+
+    return out;
+}
+
+/*
  * Push newly-unlocked clues into an already-live game_state in
  * place -- see the reveal_clues field's doc comment in puzzles.h for
  * the full contract. `desc` must describe the exact same block/cage
@@ -2782,6 +2817,7 @@ const struct game thegame = {
     REQUIRE_RBUTTON | REQUIRE_NUMPAD,  /* flags */
     keen_solve_partial,
     keen_current_grid,
+    keen_current_pencil,
     keen_reveal_clues,
 };
 

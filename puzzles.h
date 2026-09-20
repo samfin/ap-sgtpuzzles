@@ -342,6 +342,7 @@ char *midend_get_random_seed(midend *me);
 bool midend_can_format_as_text_now(midend *me);
 char *midend_text_format(midend *me);
 char *midend_current_grid(midend *me);
+char *midend_current_pencil(midend *me);
 const char *midend_reveal_clues(midend *me, const char *desc);
 const char *midend_apply_move(midend *me, const char *movestr);
 const char *midend_solve(midend *me);
@@ -795,6 +796,22 @@ struct game {
      * Returns NULL if this game doesn't implement this operation.
      */
     char *(*current_grid)(const game_state *state);
+
+    /*
+     * Optional. Analogous to current_grid() immediately above, but for
+     * the player's live PENCIL marks instead of entered digits: given
+     * a *live* game_state, returns a comma-separated string of w*w
+     * decimal integers (row-major, same cell order as current_grid()),
+     * each cell's raw pencil bitmask verbatim, with no interpretation.
+     * Used via midend_current_pencil() so a client can tell whether a
+     * specific cell already has any pencil marks in it before
+     * overwriting them wholesale (see keen_current_pencil() in
+     * keen.c, and the "double-right-click a clued cage" feature in
+     * src/puzzles.js that motivated adding this).
+     *
+     * Returns NULL if this game doesn't implement this operation.
+     */
+    char *(*current_pencil)(const game_state *state);
 
     /*
      * Optional. Given a *live* game_state and a full-size game
